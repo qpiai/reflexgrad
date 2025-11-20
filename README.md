@@ -2,7 +2,7 @@
 
 Official implementation of the paper **"ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization in LLM Agents"** by Ankush Kadu and Ashwanth Krishnan (QpiAI, 2025).
 
-## 🎯 Key Results
+##  Key Results
 
 - **67% zero-shot success rate** on ALFWorld (Trial 0, first exposure, no demonstrations)
 - **78% success rate** on Trial 1 (cross-trial learning improvement)
@@ -10,7 +10,7 @@ Official implementation of the paper **"ReflexGrad: Three-Way Synergistic Archit
 - **100% component alignment** (TODO-TextGrad-Reflexion synergy)
 - Competitive with few-shot baselines: Reflexion (91%, 6-shot), REBACT (93%), ReflAct (93%)
 
-## 🏗️ Architecture Overview
+##  Architecture Overview
 
 ReflexGrad integrates three complementary mechanisms in a tightly-coupled synergistic system:
 
@@ -34,7 +34,7 @@ The key innovation is bidirectional coupling:
 - **Reflexions → Gradients**: Generated reflexions inform TextGrad backward pass with specific failure patterns  
 - **Gradients → TODO**: Computed gradients determine TODO progression and reflexion consolidation priorities
 
-## 📦 Installation
+##  Installation
 
 ### Option 1: Using Docker (Recommended)
 
@@ -68,7 +68,7 @@ pip install -r requirements.txt
 alfworld-download
 ```
 
-## 🔑 API Configuration
+##  API Configuration
 
 ReflexGrad uses a two-tier model architecture:
 
@@ -83,7 +83,7 @@ Set your OpenAI API key:
 export OPENAI_API_KEY=your_key_here
 ```
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Run Single Environment (Test)
 
@@ -109,7 +109,7 @@ python main.py --num_trials 2 --num_envs 9 --run_name paper_full
 
 See [REPRODUCE.md](REPRODUCE.md) for detailed reproduction instructions.
 
-## ⚙️ Configuration
+##  Configuration
 
 Key hyperparameters in `base_config.yaml`:
 
@@ -123,7 +123,7 @@ Key hyperparameters in `base_config.yaml`:
 | `reflexion_freq` | 5 | Loop 2 frequency (steps) |
 | `memory_retrieval_top_k` | 6 | Cross-trial memory retrieval count |
 
-## 📊 Monitoring Results
+##  Monitoring Results
 
 Results are logged to:
 
@@ -147,7 +147,7 @@ grep "REFLEXION" {run_name}/trial_0.log
 grep "OPTIMIZER" {run_name}/trial_0.log
 ```
 
-## 🏛️ Project Structure
+##  Project Structure
 
 ```
 reflexion/
@@ -172,7 +172,7 @@ reflexion/
 └── universal_state_embeddings.py  # State representation
 ```
 
-## 🔬 Technical Details
+##  Technical Details
 
 ### TextGrad Components
 
@@ -225,7 +225,7 @@ reflexion/
 - Given new task + candidate memories, LLM evaluates utility
 - Transfers patterns like "must open containers" from microwave task to fridge task
 
-## 📖 Citation
+##  Citation
 
 If you use this code or build upon this work, please cite:
 
@@ -239,18 +239,18 @@ If you use this code or build upon this work, please cite:
 }
 ```
 
-## 📄 License
+##  License
 
 Copyright © 2025 QpiAI. All rights reserved.
 
 This code is provided for research and educational purposes. Commercial use requires permission from QpiAI.
 
-## 🐛 Issues & Support
+##  Issues & Support
 
 - **Bug Reports**: https://gitlab.qpiai.tech/ai-research/reflexion/-/issues
 - **Questions**: Contact ankush.k@qpiai.tech or ashwanth.krishnan@qpiai.tech
 
-## 🙏 Acknowledgments
+##  Acknowledgments
 
 This research was conducted at QpiAI. We thank the creators of:
 
