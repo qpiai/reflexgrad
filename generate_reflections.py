@@ -731,10 +731,41 @@ RECENT TRAJECTORY (last 15 steps):
                     key_points.append(line.strip())
             if key_points:
                 reflection_prompt += f"\n\nReflection {i+1} key points:\n" + '\n'.join(key_points[:10])
-    
-    reflection_prompt += """
 
-Generate a self-reflection using these REQUIRED keywords:
+    # CRITICAL FIX: Differential framing based on success/failure status
+    # This prevents memory contamination where successes get framed as failures
+    is_success = env_config.get('is_success', False) if env_config else False
+
+    if is_success:
+        # SUCCESS FRAMING: Ask what worked (positive reinforcement)
+        reflection_prompt += """
+
+Generate a self-reflection on this SUCCESSFUL episode using these REQUIRED keywords:
+- Use "worked" or "succeeded" when describing what went right
+- Use "because" for explanations of success
+- Use "key" or "critical" for important factors
+- Use "should" for recommendations
+- Use "maintain" or "repeat" for future strategies
+
+Format your response as:
+
+1. WHAT WORKED: Which actions succeeded and led to task completion?
+2. WHY IT WORKED: Explain because of what reason these actions succeeded
+3. KEY SUCCESS FACTORS: What were the critical elements that led to success?
+4. WHAT TO MAINTAIN: What should be repeated in similar situations?
+5. TRANSFERABLE STRATEGY: What strategy can be applied to other tasks?
+
+Be specific about EXACT action strings when mentioning them.
+Focus on the successful workflow and what made it effective.
+
+Make the reflection specific, causal, and actionable for future attempts.
+Keep it concise (under 500 words) and avoid thinking tags or metacommentary.
+Use single quotes around EXACT action strings when mentioning them."""
+    else:
+        # FAILURE FRAMING: Ask what failed (learning from mistakes)
+        reflection_prompt += """
+
+Generate a self-reflection on this FAILED episode using these REQUIRED keywords:
 - Use "failed" or "didn't" when describing what went wrong
 - Use "must" or "need" for requirements
 - Use "because" for explanations
@@ -1332,10 +1363,41 @@ RECENT TRAJECTORY (last 15 steps):
                         key_points.append(line.strip())
                 if key_points:
                     reflection_prompt += f"\n\nReflection {i+1} key points:\n" + '\n'.join(key_points[:10])
-        
-        reflection_prompt += """
 
-Generate a self-reflection using these REQUIRED keywords:
+        # CRITICAL FIX: Differential framing based on success/failure status
+        # This prevents memory contamination where successes get framed as failures
+        is_success = env_config.get('is_success', False)
+
+        if is_success:
+            # SUCCESS FRAMING: Ask what worked (positive reinforcement)
+            reflection_prompt += """
+
+Generate a self-reflection on this SUCCESSFUL episode using these REQUIRED keywords:
+- Use "worked" or "succeeded" when describing what went right
+- Use "because" for explanations of success
+- Use "key" or "critical" for important factors
+- Use "should" for recommendations
+- Use "maintain" or "repeat" for future strategies
+
+Format your response as:
+
+1. WHAT WORKED: Which actions succeeded and led to task completion?
+2. WHY IT WORKED: Explain because of what reason these actions succeeded
+3. KEY SUCCESS FACTORS: What were the critical elements that led to success?
+4. WHAT TO MAINTAIN: What should be repeated in similar situations?
+5. TRANSFERABLE STRATEGY: What strategy can be applied to other tasks?
+
+Be specific about EXACT action strings when mentioning them.
+Focus on the successful workflow and what made it effective.
+
+Make the reflection specific, causal, and actionable for future attempts.
+Keep it concise (under 500 words) and avoid thinking tags or metacommentary.
+Use single quotes around EXACT action strings when mentioning them."""
+        else:
+            # FAILURE FRAMING: Ask what failed (learning from mistakes)
+            reflection_prompt += """
+
+Generate a self-reflection on this FAILED episode using these REQUIRED keywords:
 - Use "failed" or "didn't" when describing what went wrong
 - Use "must" or "need" for requirements
 - Use "because" for explanations

@@ -599,8 +599,8 @@ class DynamicPromptGenerator:
         
         return momentum_gradients
     
-    def compute_prompt_gradient(self, trajectory: str, success: bool, task: str = None, 
-                                reflection: str = None, progress_score: int = None) -> Dict[str, str]:
+    def compute_prompt_gradient(self, trajectory: str, success: bool, task: str = None,
+                                reflection: str = None, progress_score: int = None, valid_actions: List[str] = None) -> Dict[str, str]:
         """Compute gradients with progress awareness"""
         
         # Parse interactions
@@ -649,6 +649,18 @@ class DynamicPromptGenerator:
 
                     # Universal LLM-based action extraction using fast_model (gpt-4o-mini)
                     if len(reflection) > 20:
+                        # Build valid actions context if available
+                        valid_actions_context = ""
+                        if valid_actions and len(valid_actions) > 0:
+                            actions_list = "\n".join(f"   - {act}" for act in valid_actions[:30])
+                            if len(valid_actions) > 30:
+                                actions_list += f"\n   ... and {len(valid_actions)-30} more"
+                            valid_actions_context = f"""
+Valid Actions (you MUST extract from this list ONLY):
+{actions_list}
+
+"""
+
                         extraction_prompt = f"""Analyze this Reflexion output to extract any recommended action.
 
 Reflexion:
@@ -656,13 +668,13 @@ Reflexion:
 {reflection}
 ---
 
-Task: Does Reflexion recommend a SPECIFIC action to try next?
+{valid_actions_context}Task: Does Reflexion recommend a SPECIFIC action to try next?
 
 Output ONE of these:
-1. The specific action (if recommended)
-2. The word "none" (if no action recommended)
+1. The EXACT action from the Valid Actions list above (if Reflexion recommends one)
+2. The word "none" (if no action recommended OR action not in valid list)
 
-Do not explain. Output only the action or "none".
+CRITICAL: Only output actions that appear in the Valid Actions list. Do not paraphrase or modify.
 
 Output:"""
 

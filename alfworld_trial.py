@@ -3017,21 +3017,39 @@ def adaptive_env_interaction_batch(
 
                         # Create context-specific prompts for better insights
                         if moment_type == "FAILURE":
+                            # Format valid actions list
+                            valid_actions_list = state.get('valid_actions', [])
+                            actions_display = "\n".join(f"   - {act}" for act in valid_actions_list[:30])
+                            if len(valid_actions_list) > 30:
+                                actions_display += f"\n   ... and {len(valid_actions_list)-30} more"
+
                             reflexion_prompt = f"""Task: {state['task']}
 Action tried: {action}
 What happened: {observation[:150]}
 
+Available actions you can choose from:
+{actions_display}
+
 This action FAILED. What concrete lesson should we remember to avoid this in future trials?
-Focus on: What assumption was wrong? What should we do instead?
-Provide ONE actionable insight (1-2 sentences):"""
+Focus on: What assumption was wrong? What SPECIFIC action from the list above should we try instead?
+Provide ONE actionable insight mentioning a specific action from the list (1-2 sentences):"""
 
                         elif moment_type == "SUCCESS":
+                            # Format valid actions list
+                            valid_actions_list = state.get('valid_actions', [])
+                            actions_display = "\n".join(f"   - {act}" for act in valid_actions_list[:30])
+                            if len(valid_actions_list) > 30:
+                                actions_display += f"\n   ... and {len(valid_actions_list)-30} more"
+
                             reflexion_prompt = f"""Task: {state['task']}
 Successful action: {action}
 Result: {observation[:150]}
 
+Available actions that were possible:
+{actions_display}
+
 This action SUCCEEDED and completed the task! What pattern should we remember?
-Focus on: What sequence of actions worked? What made this successful?
+Focus on: What sequence of SPECIFIC actions from the list worked? What made this successful?
 Provide a success pattern to reuse (1-2 sentences):"""
 
                         else:  # MILESTONE
@@ -3058,6 +3076,12 @@ Provide a success pattern to reuse (1-2 sentences):"""
                                 for ref in state['working_reflexions'][-3:]:  # Last 3 reflexions
                                     previous_reflexions += f"  - {ref.get('reflection', '')}\n"
 
+                            # Format valid actions list
+                            valid_actions_list = state.get('valid_actions', [])
+                            actions_display = "\n".join(f"   - {act}" for act in valid_actions_list[:30])
+                            if len(valid_actions_list) > 30:
+                                actions_display += f"\n   ... and {len(valid_actions_list)-30} more"
+
                             reflexion_prompt = f"""Task: {state['task']}
 
 {recent_trajectory}
@@ -3068,12 +3092,17 @@ Result: {observation[:150]}
 Progress: {progress_score}/10
 {previous_reflexions}
 
-Reflect on your progress so far:
-- Is your current strategy working?
-- Are you stuck in a repetitive loop?
-- What should you do next to complete the task?
+Available actions you can choose from:
+{actions_display}
 
-Provide a concise reflection (2-3 sentences):"""
+CRITICAL: You must ONLY recommend actions from the list above. Do NOT invent new actions.
+
+Reflect on your progress so far:
+- Look at the complete action history above - do you see any repeating patterns?
+- Are you stuck in a loop (same action repeated OR same sequence of actions repeated)?
+- What SPECIFIC action from the list above should you try next that is DIFFERENT from recent attempts?
+
+Provide a concise reflection mentioning a specific action from the list (2-3 sentences):"""
 
                         from vllm import SamplingParams
                         sampling_params = SamplingParams(temperature=0.3, max_tokens=200)  # Lower temp for precision
@@ -3179,6 +3208,12 @@ Provide a concise reflection (2-3 sentences):"""
             explored_locations_dict = {}
             if 'todo_manager' in state and state['todo_manager']:
                 explored_locations_dict = state['todo_manager'].visited_locations
+
+            # CRITICAL FIX: Skip gradient generation for environments that just completed
+            # This fixes the bug where successful episodes generated gradients after done=True
+            if state['done']:
+                log_debug(f"[ENV {state['env_id']}] Skipping gradient generation - episode complete (done=True)")
+                continue  # Skip to next environment, don't add to action_results
 
             # Collect ALL data for gradient generation (DON'T generate yet!)
             action_results.append({
@@ -3645,13 +3680,24 @@ Provide a concise reflection (2-3 sentences):"""
                             history_context += f"\nHistory (tiered - ALL {len(state.get('working_reflexions', []))} reflexions):\n" + "\n\n".join(history_parts)
 
                     # Build history-aware reflexion prompt
+                    # Format valid actions list
+                    valid_actions_list = state.get('valid_actions', [])
+                    actions_display = "\n".join(f"   - {act}" for act in valid_actions_list[:30])
+                    if len(valid_actions_list) > 30:
+                        actions_display += f"\n   ... and {len(valid_actions_list)-30} more"
+
                     reflexion_prompt = f"""Task: {state['task']}
 Action taken: {action}
 Result: {observation[:150]}
 {"FAILED" if is_failure else "SUCCEEDED"}
 {history_context}
 
-What key insight should we remember for future attempts? (1-2 sentences)"""
+Available actions you can choose from:
+{actions_display}
+
+CRITICAL: When suggesting next steps, ONLY recommend actions from the list above. Do NOT invent new actions.
+
+What key insight should we remember for future attempts? Include a SPECIFIC action from the list above if suggesting next steps. (1-2 sentences)"""
 
                     # Log history context status
                     if len(recent_reflexions) > 0:
@@ -3909,9 +3955,21 @@ CRITICAL ANALYSIS REQUIRED:
    Am I repeating similar action types that don't work?
    What assumption might be incorrect?
 
-4. RECOMMENDED NEXT ACTION:
+4. AVAILABLE ACTIONS (HARD CONSTRAINT):
+   Here are the ONLY actions you can actually execute:
+"""
+                # Format valid actions list
+                valid_actions_list = state.get('valid_actions', [])
+                for act in valid_actions_list[:30]:
+                    step_reflection_prompt += f"   - {act}\n"
+                if len(valid_actions_list) > 30:
+                    step_reflection_prompt += f"   ... and {len(valid_actions_list)-30} more\n"
+
+                step_reflection_prompt += """
+5. RECOMMENDED NEXT ACTION:
    If there's a semantic mismatch or wrong action type detected:
-   What SPECIFIC action should I try instead? (Be precise with action format)
+   Choose ONE action from the list in section 4 above that would make progress.
+   DO NOT invent new actions - ONLY select from the list.
 
 Generate your analysis (keep concise, 3-4 sentences total):"""
 
@@ -3948,7 +4006,8 @@ Generate your analysis (keep concise, 3-4 sentences total):"""
                         success=False,
                         task=state['task'],
                         reflection=step_reflection,
-                        progress_score=progress_score
+                        progress_score=progress_score,
+                        valid_actions=state.get('valid_actions', [])
                     )
 
                     # Extract clean action from Reflexion's CAUSAL CHAIN format
@@ -4047,15 +4106,26 @@ Generate your analysis (keep concise, 3-4 sentences total):"""
                         state['working_reflexions'] = []
 
                     # Build reflexion prompt for episodic memory
+                    # Format valid actions list
+                    valid_actions_list = state.get('valid_actions', [])
+                    actions_display = "\n".join(f"   - {act}" for act in valid_actions_list[:30])
+                    if len(valid_actions_list) > 30:
+                        actions_display += f"\n   ... and {len(valid_actions_list)-30} more"
+
                     reflexion_prompt = f"""Task: {state['task']}
 Step {state['cur_step']}: {action}
 Result: {observation[:150]}
 Type: {moment_type}
 
+Available actions you can choose from:
+{actions_display}
+
 What key insight should we remember for future trials? Focus on:
 - What worked or didn't work
 - Why this action led to this outcome
-- What to try differently next time
+- What SPECIFIC action from the list above to try differently next time
+
+CRITICAL: Only reference actions from the list above.
 
 Provide a concise (1 sentence) episodic memory insight:"""
 
@@ -4609,9 +4679,21 @@ Provide a concise (1 sentence) episodic memory insight:"""
                Am I repeating similar action types that don't work?
                What assumption might be incorrect?
 
-            4. RECOMMENDED NEXT ACTION:
+            4. AVAILABLE ACTIONS (HARD CONSTRAINT):
+               Here are the ONLY actions you can actually execute:
+"""
+                # Format valid actions list
+                valid_actions_list = state.get('valid_actions', [])
+                for act in valid_actions_list[:30]:
+                    step_reflection_prompt += f"               - {act}\n"
+                if len(valid_actions_list) > 30:
+                    step_reflection_prompt += f"               ... and {len(valid_actions_list)-30} more\n"
+
+                step_reflection_prompt += """
+            5. RECOMMENDED NEXT ACTION:
                If there's a semantic mismatch or wrong action type detected:
-               What SPECIFIC action should I try instead? (Be precise with action format)
+               Choose ONE action from the list in section 4 above that would make progress.
+               DO NOT invent new actions - ONLY select from the list.
 
             Generate your analysis (keep concise, 3-4 sentences total):"""
                 
@@ -4665,7 +4747,8 @@ Provide a concise (1 sentence) episodic memory insight:"""
                         success=False,
                         task=state['task'],
                         reflection=step_reflection,
-                        progress_score=progress_score
+                        progress_score=progress_score,
+                        valid_actions=state.get('valid_actions', [])
                     )
 
                     # Extract clean action from Reflexion's CAUSAL CHAIN format
@@ -5643,7 +5726,12 @@ def build_step_gradient_prompt_from_data(result: Dict, log_debug=print) -> str:
         for r in previous_reflexions:
             compression_type = r.get('is_compressed', None)
             step_num = r.get('step', '?')
-            reflection_text = r.get('reflection', '')[:150]
+
+            # FIX: Don't truncate - compressed already short, verbose needs full A/B/C/D structure
+            reflection_text = r.get('reflection', '')
+            if not compression_type:
+                # Verbose: allow up to 800 chars for full structured feedback
+                reflection_text = reflection_text[:800] if len(reflection_text) > 800 else reflection_text
 
             if compression_type == 'heavy':
                 formatted_reflexions.append(f"  Steps {step_num} (early summary): {reflection_text}")
@@ -6006,7 +6094,19 @@ TEXTGRAD GRADIENT COMPUTATION (Answer each precisely):
 
    Answer: PATTERN HIGH: [what worked] | PATTERN LOW: [what failed] | DIRECTION: [continue/change]
 
-3. STRATEGIC CONSTRAINT CHECK:
+3. REFLEXION LESSON ENFORCEMENT:
+   Review REFLEXION STRATEGIC INSIGHTS above for diagnosed failures.
+
+   CRITICAL RULE: If Reflexion diagnosed that action X failed to achieve property Y:
+   - DO NOT recommend action X again (it already failed!)
+   - DO NOT use "similar" or "equivalent" actions (different verbs = different effects)
+   - MUST try a DIFFERENT action type or explore new location
+
+   List any actions Reflexion identified as failing:
+
+   Answer: FAILED_ACTIONS: [list actions Reflexion said failed, or "none diagnosed"]
+
+4. STRATEGIC CONSTRAINT CHECK:
    {f'My episodic memory warns: {episodic_constraints}' if episodic_constraints else 'No strategic constraints'}
 
    Before recommending an action, verify:
@@ -6015,19 +6115,31 @@ TEXTGRAD GRADIENT COMPUTATION (Answer each precisely):
 
    Answer: CONSTRAINT CHECK: [Pass/Fail] | IF FAIL: [alternative action]
 
-4. NEXT ACTION OPTIMIZATION:
+5. NEXT ACTION OPTIMIZATION:
    Based on:
    - Current gradient (what would improve outcome)
    - Accumulated gradient history (what direction is working)
    - Strategic constraints (what to avoid)
+   - Semantic alignment (task verb must match action verb)
+
+   ⚠️ SEMANTIC ALIGNMENT PRINCIPLE:
+   Task description contains action verbs. Your recommended action should use the SAME verb.
+   Different verbs produce different environmental effects - match task verb to action verb.
 
    From the VALID ACTIONS list, which SPECIFIC action optimizes progress?
-   (Copy exact action text - don't paraphrase)
-   (Follow gradient descent - if stuck in local minima, try exploration)
 
-   Answer: RECOMMENDED ACTION: [exact action from VALID ACTIONS] | GRADIENT JUSTIFICATION: [why this follows gradient]
+   MANDATORY: Before answering, complete this verb-matching check:
+   1. Extract the main action verb from task description
+   2. Search VALID ACTIONS for actions containing that verb
+   3. If found: pick best one; If not found: pick action exploring new location
 
-5. PROGRESS EVALUATION (TextGrad-Style Pure Textual Feedback):
+   Answer FORMAT (fill ALL fields):
+   TASK_VERB: [verb from task]
+   VERB_IN_VALID_ACTIONS: [Yes/No - do any valid actions use this verb?]
+   RECOMMENDED_ACTION: [exact text from VALID ACTIONS]
+   JUSTIFICATION: [why this action]
+
+6. PROGRESS EVALUATION (TextGrad-Style Pure Textual Feedback):
    Evaluate the progress this action made toward FULL TASK: "{task}"
 
    Context: {f'Current subtask is "{current_todo.content}"' if current_todo else 'No active subtask'}
@@ -6277,19 +6389,36 @@ def generate_textgrad_step_guidance(
         items_str = ', '.join(inventory)
         inventory_context = f"\n🎒 INVENTORY: Currently carrying {items_str}\n   ⚠️ If holding items, consider 'put' actions to place them.\n"
 
-    # Build gradient history (recent step learnings for optimization)
+    # Build gradient history (ALL tiered reflexions - already smartly compressed)
+    # CRITICAL: Use ALL history to avoid loops (forgetting past mistakes)
     gradient_context = ""
     if previous_reflexions and len(previous_reflexions) > 0:
-        recent_reflexions = previous_reflexions[-5:]  # Last 5 steps for immediate feedback
+        # Use ALL tiered reflexions (already compressed by manage_working_reflexions_tiered)
+        # This includes: cross-trial verbose + last 2 verbose + medium compressed + heavy compressed
         formatted = []
-        for r in recent_reflexions:
+        for r in previous_reflexions:
             step_num = r.get('step', '?')
-            progress = r.get('progress_score', 0)
+            progress_status = r.get('progress_status', 'UNKNOWN')
             guidance = r.get('next_action_guidance', '')[:80]
-            formatted.append(f"  Step {step_num}: Progress={progress}/10 → {guidance}")
+
+            # FIX #1: working_reflexions use 'reflection' field, step_gradients use 'hypothesis'
+            # Try 'reflection' first (working_reflexions), fallback to 'hypothesis' (step_gradients)
+            hypothesis = r.get('reflection', r.get('hypothesis', ''))
+
+            # FIX #2: Don't truncate if already compressed; for verbose, allow full rich feedback
+            # Compressed reflexions already shortened (~100-200 chars max)
+            # Verbose reflexions need full A/B/C/D structure (~500-800 chars)
+            if r.get('is_compressed'):
+                # Already compressed by tiered system, show in full
+                hyp_display = hypothesis
+            else:
+                # Verbose: show up to 800 chars to capture full A/B/C/D structured feedback
+                hyp_display = hypothesis[:800] if len(hypothesis) > 800 else hypothesis
+
+            formatted.append(f"  Step {step_num}: [{progress_status}] {hyp_display} → {guidance}")
 
         gradient_text = "\n".join(formatted)
-        gradient_context = f"\n📊 RECENT GRADIENT SIGNALS (last {len(recent_reflexions)} steps):\n{gradient_text}\n"
+        gradient_context = f"\n📊 GRADIENT HISTORY (ALL steps with smart compression):\n{gradient_text}\n"
 
     # Build episodic memory context (proven patterns)
     episodic_context = ""
@@ -6341,40 +6470,73 @@ The environment has explicit action semantics - use what's actually available.
 TEXTGRAD OPTIMIZATION (Answer concisely):
 ═══════════════════════════════════════════════════════════
 
-1. PROGRESS ASSESSMENT (0-10 scale):
-   BEFORE scoring, analyze ACTION EFFECTS:
+1. PROGRESS ASSESSMENT:
+   Analyze the action's effects using PURE TEXTUAL FEEDBACK (TextGrad approach):
 
-   a) What property/attribute did this action change?
-      (e.g., spatial location, object state, container accessibility, etc.)
+   a) What did this action accomplish?
+      (Describe the state change in natural language)
 
-   b) What property does the task require us to change?
-      (Extract from task description what needs to be modified)
+   b) What does the task require?
+      (Extract the goal from task description)
 
-   c) Property match check:
-      - If action changed a DIFFERENT property than task requires → Score 0-3
-      - If action changed the CORRECT property for task → Score 7-10
-      - If action made partial progress → Score 4-6
+   c) Semantic alignment check:
+      - If action verb matches task verb → Making progress
+      - If action verb differs from task verb → Possible mismatch
+      - If action produces task-irrelevant effects → Wrong approach
 
-   Now score progress 0-10:
+   Answer: PROGRESS: [NO_PROGRESS | EXPLORING | PARTIAL_PROGRESS | MAJOR_PROGRESS | TASK_COMPLETE]
+   REASON: [Explain what changed and how it relates to task goal]
 
-   Answer: PROGRESS: [0-10] | REASON: [state which property changed and if it matches task requirement]
+2. GRADIENT SIGNAL (Rich Textual Feedback):
+   Provide EXPLICIT, DETAILED feedback about what was learned.
 
-2. GRADIENT SIGNAL:
-   What did this step teach us about what works/doesn't work?
-   Keep it concise - focus on actionable insights, not analysis.
+   If there's a mismatch between action and task:
+   - STATE what the action did
+   - STATE what the task needs
+   - EXPLAIN the semantic difference between action verb and task verb
+   - SUGGEST the correct action verb to use
 
-   Answer: GRADIENT: [one sentence lesson]
+   If making progress:
+   - STATE what's working
+   - SUGGEST continuing similar approach
 
-3. NEXT ACTION OPTIMIZATION:
-   Based on progress score and gradient signals, what's the BEST next action?
+   Answer: GRADIENT: [Detailed, explicit feedback describing the learning]
 
-   Selection criteria:
-   - If progress ≥ 7: Continue current strategy
-   - If progress 4-6: Adjust approach slightly
-   - If progress < 4: Try different location/action type
+3. REFLEXION LESSON ENFORCEMENT:
+   Review GRADIENT HISTORY above for diagnosed failures from Reflexion.
+
+   CRITICAL RULE: If previous steps diagnosed that action X failed to achieve property Y:
+   - DO NOT recommend action X again (it already failed!)
+   - DO NOT use "similar" or "equivalent" actions (different verbs = different effects)
+   - MUST try a DIFFERENT action type or explore new location
+
+   List any actions you see were tried and failed:
+
+   Answer: FAILED_ACTIONS: [list actions that were tried and failed, or "none diagnosed"]
+
+4. NEXT ACTION OPTIMIZATION:
+   Based on GRADIENT feedback and progress status, what's the BEST next action?
+
+   Selection criteria (Pure TextGrad approach):
+   - If TASK_COMPLETE or MAJOR_PROGRESS: Continue current strategy
+   - If PARTIAL_PROGRESS: Adjust approach slightly or continue
+   - If EXPLORING: Try different approaches that align with gradient feedback
+   - If NO_PROGRESS: Change strategy - if gradient identified verb mismatch, use correct verb
    - Respect TODO subtask if active
    - Use episodic patterns if available
    - Pick from VALID ACTIONS list
+   - MUST NOT repeat actions listed in FAILED_ACTIONS above
+
+   ⚠️ SEMANTIC ALIGNMENT PRINCIPLE:
+   - Task description contains action verbs (e.g., verbs describing what to do with objects)
+   - Recommended action MUST use the SAME verb as the task description
+   - Different verbs typically produce different effects on environment state
+   - Match task verb to action verb for semantic alignment
+
+   MANDATORY PROCESS:
+   1. Identify main verb in task
+   2. Search valid actions for that verb
+   3. If found: use it; If not: explore new location
 
    Answer: NEXT_ACTION: [exact action string from valid actions, nothing else]
 
@@ -6496,7 +6658,12 @@ def generate_reflexion_causal_analysis(
         for r in previous_reflexions:
             compression_type = r.get('is_compressed', None)
             step_num = r.get('step', '?')
-            reflection_text = r.get('reflection', '')[:150]
+
+            # FIX: Don't truncate - compressed already short, verbose needs full A/B/C/D structure
+            reflection_text = r.get('reflection', '')
+            if not compression_type:
+                # Verbose: allow up to 800 chars for full structured feedback
+                reflection_text = reflection_text[:800] if len(reflection_text) > 800 else reflection_text
 
             if compression_type == 'heavy':
                 formatted_reflexions.append(f"  Steps {step_num} (early summary): {reflection_text}")

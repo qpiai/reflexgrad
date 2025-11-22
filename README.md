@@ -1,8 +1,13 @@
 # ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization
 
+[![arXiv](https://img.shields.io/badge/arXiv-2511.14584-b31b1b.svg)](https://arxiv.org/abs/2511.14584)
+[![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
+
 Official implementation of the paper **"ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization in LLM Agents"** by Ankush Kadu and Ashwanth Krishnan (QpiAI, 2025).
 
-##  Key Results
+**Paper:** [arXiv:2511.14584](https://arxiv.org/abs/2511.14584) | **DOI:** [10.48550/arXiv.2511.14584](https://doi.org/10.48550/arXiv.2511.14584)
+
+## 🎯 Key Results
 
 - **67% zero-shot success rate** on ALFWorld (Trial 0, first exposure, no demonstrations)
 - **78% success rate** on Trial 1 (cross-trial learning improvement)
@@ -54,8 +59,8 @@ docker run -it --env OPENAI_API_KEY=your_key qpiai/reflexgrad:latest
 
 ```bash
 # Clone repository
-git clone https://gitlab.qpiai.tech/ai-research/reflexion.git
-cd reflexion
+git clone https://github.com/qpiai/reflexgrad.git
+cd reflexgrad
 
 # Create conda environment
 conda create -n reflexgrad python=3.9
@@ -233,8 +238,10 @@ If you use this code or build upon this work, please cite:
 @article{kadu2025reflexgrad,
   title={ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization in LLM Agents},
   author={Kadu, Ankush and Krishnan, Ashwanth},
-  journal={arXiv preprint},
+  journal={arXiv preprint arXiv:2511.14584},
   year={2025},
+  url={https://arxiv.org/abs/2511.14584},
+  doi={10.48550/arXiv.2511.14584},
   organization={QpiAI}
 }
 ```
@@ -247,7 +254,7 @@ This code is provided for research and educational purposes. Commercial use requ
 
 ##  Issues & Support
 
-- **Bug Reports**: https://gitlab.qpiai.tech/ai-research/reflexion/-/issues
+- **Bug Reports**: https://github.com/qpiai/reflexgrad/issues
 - **Questions**: Contact ankush.k@qpiai.tech or ashwanth.krishnan@qpiai.tech
 
 ##  Acknowledgments
