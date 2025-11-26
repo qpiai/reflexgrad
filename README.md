@@ -7,7 +7,7 @@ Official implementation of the paper **"ReflexGrad: Three-Way Synergistic Archit
 
 **Paper:** [arXiv:2511.14584](https://arxiv.org/abs/2511.14584) | **DOI:** [10.48550/arXiv.2511.14584](https://doi.org/10.48550/arXiv.2511.14584)
 
-## 🎯 Key Results
+##  Key Results
 
 - **67% zero-shot success rate** on ALFWorld (Trial 0, first exposure, no demonstrations)
 - **78% success rate** on Trial 1 (cross-trial learning improvement)
