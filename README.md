@@ -1,7 +1,7 @@
 # ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization
 
 [![arXiv](https://img.shields.io/badge/arXiv-2511.14584-b31b1b.svg)](https://arxiv.org/abs/2511.14584)
-[![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Official implementation of the paper **"ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization in LLM Agents"** by Ankush Kadu and Ashwanth Krishnan (QpiAI, 2025).
 
@@ -248,9 +248,9 @@ If you use this code or build upon this work, please cite:
 
 ##  License
 
-Copyright © 2025 QpiAI. All rights reserved.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-This code is provided for research and educational purposes. Commercial use requires permission from QpiAI.
+Copyright © 2025 QpiAI (Ankush Kadu, Ashwanth Krishnan)
 
 ##  Issues & Support
 
