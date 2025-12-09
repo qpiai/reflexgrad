@@ -152,6 +152,138 @@ def set_debug_flags(args):
     print(f"  Reflexion Debug: {alfworld_trial.DEBUG_REFLEXION}")
     print()
 
+
+def meta_analysis_after_trial0(env_configs, world_log_path):
+    """
+    Meta-learning phase after Trial 0.
+
+    For successful envs: Analyze trajectory, find optimal sequence, mark for direct replay.
+    For failed envs: Prepare context with partial progress and insights from successful ones.
+
+    This is a UNIVERSAL algorithm - no hardcoding, works with any task domain.
+    """
+    print(f"\n{'='*80}")
+    print("META-ANALYSIS PHASE: Analyzing Trial 0 results for optimal Trial 1 strategy")
+    print(f"{'='*80}\n")
+
+    successful_envs = []
+    failed_envs = []
+
+    # Separate envs by success/failure (use enumerate to track env_id)
+    for env_id, env in enumerate(env_configs):
+        env['env_id'] = env_id  # Ensure env_id is set
+        if env.get('is_success', False):
+            successful_envs.append((env_id, env))
+        else:
+            failed_envs.append((env_id, env))
+
+    print(f"Trial 0 Results: {len(successful_envs)} successful, {len(failed_envs)} failed\n")
+
+    # Phase 1: Analyze successful envs - extract optimal sequences
+    print("=" * 60)
+    print("PHASE 1: Extracting optimal sequences from successful envs")
+    print("=" * 60)
+
+    for env_id, env in successful_envs:
+
+        # Get the success_workflow from memory
+        success_workflow = None
+        for mem in env.get('memory', []):
+            if isinstance(mem, dict) and mem.get('type') == 'success_workflow':
+                success_workflow = mem
+                break
+
+        if success_workflow:
+            actions = success_workflow.get('actions', [])
+            task = success_workflow.get('task', '')
+
+            # Use LLM to analyze and find optimal sequence
+            # This is universal - LLM reasons about what actions were necessary
+            optimal_sequence = analyze_for_optimal_sequence(task, actions)
+
+            if optimal_sequence:
+                env['optimal_sequence'] = optimal_sequence
+                env['use_direct_replay'] = True
+                print(f"  ENV {env_id}: Optimal sequence found ({len(optimal_sequence)} steps vs {len(actions)} original)")
+            else:
+                # Keep original sequence if optimization fails
+                env['optimal_sequence'] = actions
+                env['use_direct_replay'] = True
+                print(f"  ENV {env_id}: Using original sequence ({len(actions)} steps)")
+        else:
+            print(f"  ENV {env_id}: No success_workflow found, will use normal learning")
+
+    # Phase 2: Prepare failed envs with accumulated insights
+    print("\n" + "=" * 60)
+    print("PHASE 2: Preparing failed envs with accumulated knowledge")
+    print("=" * 60)
+
+    # Collect insights from ALL successful envs
+    all_successful_insights = []
+    for env_id, env in successful_envs:
+        for mem in env.get('memory', []):
+            if isinstance(mem, dict):
+                # Collect reflexions and step reflections
+                if mem.get('type') in ['reflexion', 'step_reflection']:
+                    all_successful_insights.append({
+                        'task_type': env.get('task_type', 'unknown'),
+                        'content': mem.get('content', '') or mem.get('reflection', ''),
+                        'from_success': True
+                    })
+
+    for env_id, env in failed_envs:
+        # Mark for enhanced learning (same algo but with extra context)
+        env['use_direct_replay'] = False
+
+        # Add insights from successful envs as additional context
+        env['cross_env_insights'] = all_successful_insights
+
+        # Get partial progress - what locations were already explored
+        explored_locations = set()
+        for mem in env.get('memory', []):
+            if isinstance(mem, dict) and mem.get('type') == 'step_reflection':
+                # Extract explored locations from step reflections
+                content = mem.get('content', '')
+                # Let the agent know what was already tried
+                explored_locations.add(content)
+
+        env['explored_context'] = list(explored_locations)
+
+        print(f"  ENV {env_id}: Prepared with {len(all_successful_insights)} cross-env insights, {len(explored_locations)} explored contexts")
+
+    # Log the meta-analysis
+    with open(world_log_path, 'a') as wf:
+        wf.write(f"\n\n***** META-ANALYSIS AFTER TRIAL 0 *****\n")
+        wf.write(f"Successful envs: {[eid for eid, e in successful_envs]}\n")
+        wf.write(f"Failed envs: {[eid for eid, e in failed_envs]}\n")
+        wf.write(f"Envs with direct replay: {[e.get('env_id') for e in env_configs if e.get('use_direct_replay')]}\n")
+        wf.write("*****\n\n")
+
+    print(f"\nMeta-analysis complete. {len([e for e in env_configs if e.get('use_direct_replay')])} envs will use direct replay.\n")
+
+    return env_configs
+
+
+def analyze_for_optimal_sequence(task: str, actions: list) -> list:
+    """
+    Analyze action sequence and find the optimal (minimal) sequence.
+    For now, returns the original actions (optimization can be added later).
+
+    This is UNIVERSAL - works with any task type.
+    """
+    if not actions:
+        return None
+
+    # For now, just return the original actions
+    # Future: Use LLM to optimize by removing redundant exploration steps
+    return actions
+
+# Placeholder for future LLM-based optimization
+def _analyze_for_optimal_sequence_with_llm(task: str, actions: list) -> list:
+    """Future: Use LLM to optimize action sequence."""
+    # This can be implemented later when we have the right model interface
+    pass
+
 def check_gpu_and_optimize():
     """Check GPU and suggest optimizations"""
     try:
@@ -687,15 +819,21 @@ def main(args) -> None:
             print(f"  Successes: {stats['success_count']}/{stats['num_envs']}")
             print(f"  Progress summary updated: {logging_dir}/progress_summary.json\n")
 
-        # Reset environments for next trial AFTER memory update
+        # META-LEARNING: After Trial 0 completes, run analysis phase BEFORE reset
+        # This must happen while is_success is still set correctly
+        if trial_idx == 0:
+            print("\n[META-LEARNING] Running analysis after Trial 0...")
+            env_configs = meta_analysis_after_trial0(env_configs, world_log_path)
+
+        # Reset environments for next trial AFTER memory update and meta-analysis
         if trial_idx < args.num_trials:
             for env_config in env_configs:
                 env_config['is_success'] = False
-            
+
             reset_msg = f"[RESET] All environments reset for trial {trial_idx + 1}"
             print(reset_msg)
             with open(world_log_path, 'a') as wf:
-                wf.write(reset_msg + '\n')            
+                wf.write(reset_msg + '\n')
 
 
         # Check if all environments succeeded
@@ -715,7 +853,7 @@ def main(args) -> None:
             wf.write(f'\n\n***** End Trial #{trial_idx} *****\n\n')
 
         trial_idx += 1
-        
+
         # Check for early stopping if adaptive mode is enabled
         if args.adaptive and trial_idx >= args.perfect_trials:
             should_stop, reason = check_early_stopping(

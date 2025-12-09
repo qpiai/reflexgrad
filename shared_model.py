@@ -125,7 +125,11 @@ class OpenAIModelWrapper:
         # Log performance improvement with mode indicator
         elapsed = time.time() - start
         mode = "MINIMAL (fast, few reasoning tokens)" if reasoning_effort == 'minimal' else f"reasoning={reasoning_effort}"
-        print(f"[GPT-5] Processed {len(prompts)} prompts in {elapsed:.2f}s ({elapsed/len(prompts):.3f}s per prompt avg) [{mode}]")
+        # FIX: Handle edge case when all environments are skipped (len(prompts) == 0)
+        if len(prompts) > 0:
+            print(f"[GPT-5] Processed {len(prompts)} prompts in {elapsed:.2f}s ({elapsed/len(prompts):.3f}s per prompt avg) [{mode}]")
+        else:
+            print(f"[GPT-5] No prompts to process (all environments completed) [{mode}]")
 
         return outs
 
@@ -150,7 +154,7 @@ class FastModelWrapper:
                         model=self.model_name,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=getattr(sampling_params, 'temperature', 0.0) if sampling_params else 0.0,
-                        max_tokens=getattr(sampling_params, 'max_tokens', 150) if sampling_params else 150,
+                        max_tokens=getattr(sampling_params, 'max_tokens', 3000) if sampling_params else 3000,  # FIX #5 (Nov 22): Increased from 150 to 3000 to prevent TextGrad truncation
                     )
                     result = resp.choices[0].message.content
 
