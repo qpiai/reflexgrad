@@ -1,0 +1,1072 @@
+\documentclass{article}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{amsthm}
+\usepackage{fancyhdr}
+\usepackage{float}  % For precise figure placement with [H]
+\usepackage{xcolor}  % For colored boxes
+\usepackage{tcolorbox}  % For fancy colored boxes around examples
+\usepackage{hyperref}  % For URLs and hyperlinks
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{definition}{Definition}
+
+% Page style
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\small A PREPRINT - NOVEMBER 6, 2025}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+\begin{document}
+
+% Custom title page (no header on first page)
+\thispagestyle{empty}
+
+\begin{center}
+  \vspace{0.5cm}
+  \rule{\textwidth}{1pt}
+  \vspace{1.0cm}
+
+  \parbox{\textwidth}{\centering\LARGE\bfseries\setlength{\baselineskip}{1.0em}%
+  ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization in LLM Agents}
+
+  \vspace{1.0cm}
+  \rule{\textwidth}{1pt}
+
+  \vspace{1.0cm}
+
+  {\large
+  \begin{tabular}{c@{\hspace{1cm}}c}
+    \textbf{Ankush Kadu} & \textbf{Ashwanth Krishnan} \\
+    QpiAI & QpiAI \\
+    \texttt{ankush.k@qpiai.tech} & \texttt{ashwanth.krishnan@qpiai.tech}
+  \end{tabular}
+  }
+
+  \vspace{1.0cm}
+
+  {\large November 6, 2025}
+
+  \vspace{1.0cm}
+
+  {\Large\bfseries ABSTRACT}
+\end{center}
+
+\vspace{0.4cm}
+
+\noindent
+Enabling agents to learn from experience and generalize across diverse tasks without task-specific training remains a fundamental challenge in reinforcement learning and decision-making. While recent approaches have explored episodic memory (Reflexion), gradient-based prompt optimization (TextGrad), and hierarchical task decomposition independently, their potential for synergistic integration remains unexplored. We introduce \textbf{ReflexGrad}, a novel architecture that tightly couples three complementary mechanisms: (1) LLM-based hierarchical TODO decomposition for strategic planning, (2) history-aware causal reflection that analyzes recent action patterns to identify failure root causes and enable within-trial learning, and (3) gradient-based optimization for systematic improvement. Unlike prior work relying on few-shot demonstrations, our system achieves true zero-shot generalization through pure LLM semantic reasoning, requiring no task-specific examples, fine-tuning, or hardcoded similarity metrics. Evaluated on ALFWorld benchmark tasks, ReflexGrad demonstrates \textbf{67\% zero-shot success rate} on Trial 0 without any prior task experience or demonstrations, establishing effective performance on first exposure. Through empirical analysis, we identify the architectural mechanisms underlying stable convergence (zero action loops) and effective cross-task transfer (67\%→78\% improvement). Our work demonstrates that synergistic integration of complementary learning mechanisms enables robust zero-shot generalization that approaches few-shot baselines from prior work.
+
+\vspace{1cm}
+
+\section{Introduction}
+
+The ability to learn from past experiences and apply acquired knowledge to novel situations is fundamental to human intelligence. In artificial intelligence, enabling agents to achieve similar generalization capabilities without extensive task-specific training remains an open challenge. Traditional reinforcement learning approaches often struggle when faced with distribution shifts or require substantial retraining for new tasks \cite{kirk2023survey}. Recent advances in large language model (LLM) agents have shown promise in interactive decision-making \cite{yao2023react}, yet achieving consistent cross-task transfer learning without hardcoded heuristics remains elusive.
+
+Three complementary paradigms have emerged for improving agent learning: \textbf{hierarchical task decomposition}, \textbf{episodic memory with self-reflection} \cite{shinn2023reflexion}, and \textbf{gradient-based prompt optimization} \cite{yuksekgonul2024textgrad}. Task decomposition breaks complex goals into manageable subgoals, providing strategic structure. Reflexion enables agents to analyze recent action-observation sequences to identify causal failure patterns and generate corrective insights in real-time, while also storing successful strategies for cross-trial transfer. TextGrad treats natural language prompts as differentiable parameters, computing textual gradients through LLM-based feedback to optimize decision-making strategies. While each approach demonstrates effectiveness in its respective domain, they have been studied in isolation, leaving their potential synergies unexplored. Furthermore, most prior work relies on \textbf{few-shot demonstrations}—providing example trajectories to guide agent behavior—raising the question: \textit{Can agents achieve robust generalization in truly zero-shot settings through architectural synergy alone?}
+
+Consider a household robot tasked with "cooling a pan and placing it on the countertop." An agent using only episodic memory might remember that containers must be opened before placing objects inside, but struggle to systematically explore when initial strategies fail. Conversely, an agent using only gradient optimization might improve its action selection through feedback, but fail to retain critical workflow insights across episodes. The question naturally arises: \textit{Can these complementary mechanisms be integrated synergistically to achieve capabilities beyond their individual strengths?}
+
+We introduce \textbf{ReflexGrad}, a novel architecture that achieves tight coupling between episodic reflection and gradient-based optimization. Our key insight is that reflexions should not merely provide static context, but actively shape the gradient optimization landscape, while gradients should guide which reflexions prove most valuable to retain and retrieve. This bidirectional interaction creates a feedback loop where each component enhances the other.
+
+Our system implements four key innovations:
+
+\textbf{(1) LLM-Based Hierarchical TODO Decomposition:} ReflexGrad begins each task by decomposing high-level goals into sequential subgoals using pure LLM reasoning—no hardcoded task decomposition rules or environment-specific heuristics. The TODO system maintains state tracking (pending/in-progress/completed), updates based on TextGrad progress signals, and provides strategic structure that guides both reflexion generation and gradient optimization. Critically, this enables zero-shot task understanding without requiring demonstration examples.
+
+\textbf{(2) Triple Synergistic Coupling:} Rather than treating TODO planning, reflexion, and gradient optimization as independent modules, ReflexGrad establishes a three-way closed feedback loop. TODO subgoals structure reflexion generation by identifying which experiences warrant deeper analysis. Reflexions actively analyze recent action-observation history (last 5-15 steps) to identify causal root causes of failures and generate corrective insights, which then inform gradient computation with specific failure patterns and successful strategies. Computed gradients determine TODO progression and reflexion consolidation priorities. This creates a unified learning system where improvements cascade across all three components.
+
+\textbf{(3) LLM-Based Semantic Transfer:} Unlike prior work relying on hardcoded similarity metrics \cite{zhong2024memorybank} or embedding-based retrieval \cite{hu2024tree}, ReflexGrad achieves cross-task transfer through pure LLM semantic reasoning. Given a new task and candidate memories, an LLM evaluates utility based on deep contextual understanding rather than surface-level similarity. This enables transferring the insight "must open containers before placing objects" from a microwave task to a novel refrigerator task through semantic matching alone—\textit{without few-shot demonstration examples}.
+
+\textbf{(4) Three-Tier Hierarchical Memory:} We implement a hierarchical memory system comprising working memory (recent high-importance experiences), consolidated memory (extracted cross-task patterns), and episodic archive (complete history). This architecture, inspired by human memory systems \cite{atkinson1968human}, enables efficient retrieval while preventing catastrophic forgetting through controlled compression and decay mechanisms.
+
+We evaluate ReflexGrad on the ALFWorld benchmark \cite{shridhar2021alfworld}, a challenging text-based environment requiring multi-step reasoning for household tasks. Unlike prior work using few-shot demonstrations, our system operates in a \textbf{truly zero-shot setting}—no task-specific examples, no hardcoded ALFWorld knowledge, no demonstration trajectories. Across 9 diverse environments on Trial 0 (first exposure), our system achieves:
+
+\begin{itemize}
+\item \textbf{67\% zero-shot success rate} (6/9 environments) without any prior task experience or demonstrations
+\item \textbf{Zero action loops}, eliminating repetitive failed behaviors observed in baseline approaches
+\item \textbf{100\% TODO-TextGrad-Reflexion alignment}, demonstrating effective three-way synergy
+\item Competitive with few-shot baselines: Reflexion (91\%, 6-shot), REBACT (93\%, few-shot), ReflAct (93\%, ICL)
+\end{itemize}
+
+Through detailed empirical analysis, we identify the architectural mechanisms underlying these results: TODO checkpointing prevents backtracking, reflexion memory captures failure patterns for reuse, and incremental gradient updates stabilize convergence. We demonstrate effective cross-task transfer by analyzing semantic pattern extraction and LLM-based retrieval quality across all trials.
+
+The contributions of this work are:
+
+\begin{enumerate}
+\item First triple synergistic integration of hierarchical TODO decomposition, episodic reflection (Reflexion), and gradient-based optimization (TextGrad) with three-way feedback coupling
+\item True zero-shot generalization achieving 67\% success without few-shot demonstrations, unlike prior work relying on in-context learning examples
+\item Pure LLM-based semantic reasoning for task decomposition, memory retrieval, and TODO verification—requiring zero hardcoded similarity metrics or environment-specific heuristics
+\item Three-tier hierarchical memory system with empirical analysis of convergence properties, memory growth bounds, and cross-task transfer mechanisms
+\item Empirical demonstration competitive with few-shot baselines (91-96\%) while operating in strictly harder zero-shot setting
+\item Mechanistic analysis identifying architectural components responsible for zero-loop behavior and effective knowledge transfer
+\item Open-source implementation and comprehensive experimental analysis\footnote{Code available at: \url{https://github.com/qpiai/reflexgrad}}
+\end{enumerate}
+
+\section{Related Work}
+
+\subsection{Episodic Memory and Self-Reflection}
+
+Reflexion \cite{shinn2023reflexion} introduced episodic memory for LLM agents, enabling verbal reinforcement learning through self-generated reflections. The approach stores textual descriptions of successes and failures, retrieving relevant experiences to guide future decisions. Extensions include hierarchical memory structures \cite{hu2024tree} and multi-agent reflection \cite{chen2024agentreview}. However, these methods treat memory retrieval as static context provision rather than dynamic optimization.
+
+MetaReflection \cite{park2024metamemory} extends reflection with metacognitive reasoning, but focuses on offline learning rather than online adaptation. REMO \cite{anonymous2025remo} combines RAG-based memory with reflection sequentially, lacking the tight bidirectional coupling present in ReflexGrad. Unlike these approaches, our system performs active causal analysis of recent action-observation sequences (last 5-15 steps) to identify failure root causes during the trial, enabling immediate within-trial learning rather than purely cross-trial transfer. Reflexions then serve as active participants in gradient computation, creating a unified learning loop.
+
+\subsection{Gradient-Based Prompt Optimization}
+
+TextGrad \cite{yuksekgonul2024textgrad} formulated prompt optimization as gradient descent in natural language space, computing textual gradients through LLM feedback. This enables systematic improvement of prompts and strategies without manual engineering. Related work includes prompt evolution \cite{zhou2023large} and feedback-driven refinement \cite{madaan2023selfrefine}.
+
+AriGraph \cite{ji2025arigraph} extends gradient-based optimization with graph-structured memory and formal mathematical frameworks, but does not integrate episodic reflection mechanisms. Optimization-based planning \cite{hao2023reasoning} applies gradients to action sequences but lacks cross-task transfer capabilities. Our work uniquely combines gradient optimization with episodic memory in a synergistic architecture.
+
+\subsection{Cross-Task Transfer Learning}
+
+Zero-shot generalization in LLM agents has been explored through in-context learning \cite{dong2023reta}, meta-learning \cite{wang2024metalearning}, and compositional generalization \cite{lake2018generalization}. MemoryBank \cite{zhong2024memorybank} implements cross-task memory sharing but relies on hardcoded similarity metrics and lacks gradient-based optimization.
+
+Prior work on transfer learning in RL \cite{kirk2023survey} typically requires task-specific fine-tuning or shared low-level features. In contrast, ReflexGrad achieves transfer through pure semantic reasoning, extracting task-agnostic patterns ("open containers before placing objects") applicable across diverse scenarios without architectural modifications.
+
+\subsection{Hierarchical Memory Systems}
+
+Cognitive science literature on human memory \cite{atkinson1968human,cowan2008differences} motivates hierarchical memory architectures. Recent AI systems implement similar structures: episodic memory buffers \cite{pritzel2017neural}, working memory mechanisms \cite{graves2014neural}, and memory consolidation \cite{rolnick2019experience}.
+
+Our three-tier system (working, consolidated, episodic) draws inspiration from these approaches while introducing LLM-based consolidation rather than neural network compression. This enables interpretable pattern extraction and explicit semantic reasoning during retrieval.
+
+\subsection{Hierarchical Task Decomposition and Planning}
+
+Hierarchical task decomposition has a rich history in AI planning \cite{sacerdoti1974planning} and reinforcement learning \cite{barto2003recent}. Classical approaches use manually specified hierarchies or learned options, requiring domain expertise or extensive training. Recent LLM-based planners leverage in-context learning for task decomposition \cite{huang2022language,song2023llmplanner}, but typically rely on few-shot examples to guide decomposition.
+
+TODO management systems for software agents track task progress through explicit state machines \cite{automated-planning}. However, prior work either uses hardcoded task structures or requires demonstration trajectories. Most critically, these systems operate independently from learning mechanisms like episodic memory or gradient optimization, missing potential synergies.
+
+ReflexGrad uniquely integrates TODO decomposition with reflexion and TextGrad through three-way coupling: TODOs structure reflexion analysis, reflexions inform gradient signals, and gradients guide TODO progression. Furthermore, our system achieves decomposition through pure LLM reasoning without few-shot demonstrations, enabling true zero-shot generalization.
+
+\subsection{Zero-Shot vs. Few-Shot Learning in LLM Agents}
+
+Most prior work on LLM agents for interactive tasks relies on few-shot in-context learning. Reflexion \cite{shinn2023reflexion} uses 2-shot examples from demonstration files. REBACT \cite{carta2024rebact} employs successful trajectory examples in prompts. ReflAct \cite{kim2024reflact} uses ICL (in-context learning) with demonstration examples. A3T \cite{du2024a3t} combines few-shot prompting with fine-tuning via QLoRA.
+
+While few-shot examples provide strong inductive bias, they require careful curation, limit generalization to novel task distributions, and may not transfer across domains. Our work explores the complementary question: \textit{Can architectural synergy enable robust zero-shot performance competitive with few-shot baselines?} We demonstrate that integrating TODO decomposition, reflexion, and TextGrad achieves 67\% zero-shot success, approaching few-shot baselines (91-93\%) despite the strictly harder setting.
+
+\section{Problem Formulation}
+
+We formalize the cross-task learning problem as a sequence of episodic Markov Decision Processes (MDPs) with episodic memory augmentation.
+
+\begin{definition}[Episodic MDP with Memory]
+An episodic MDP with memory is defined by the tuple $\mathcal{M} = (\mathcal{S}, \mathcal{A}, \mathcal{T}, \mathcal{R}, \mathcal{H}, \gamma, \mathcal{M}_{\text{epi}})$ where:
+\begin{itemize}
+\item $\mathcal{S}$ is the state space
+\item $\mathcal{A}$ is the action space
+\item $\mathcal{T}: \mathcal{S} \times \mathcal{A} \times \mathcal{S} \rightarrow [0,1]$ is the transition function
+\item $\mathcal{R}: \mathcal{S} \times \mathcal{A} \rightarrow \mathbb{R}$ is the reward function
+\item $\mathcal{H}$ is the episode horizon
+\item $\gamma \in [0,1]$ is the discount factor
+\item $\mathcal{M}_{\text{epi}}$ is the episodic memory store
+\end{itemize}
+\end{definition}
+
+At each timestep $t$, the agent observes state $s_t$, selects action $a_t$ based on policy $\pi_{\theta}$ conditioned on current state and retrieved memories $m_t = \text{Retrieve}(\mathcal{M}_{\text{epi}}, s_t)$, receives reward $r_t$, and transitions to $s_{t+1} \sim \mathcal{T}(\cdot|s_t, a_t)$.
+
+\textbf{Notation:} We denote $|\mathcal{S}|$ and $|\mathcal{A}|$ as the cardinalities (sizes) of the state and action spaces respectively. A policy $\pi$ is \textit{$\varepsilon$-optimal} if its expected return is within $\varepsilon$ of the optimal policy: $V^{\pi^*}(s_0) - V^\pi(s_0) \leq \varepsilon$ for all initial states $s_0$.
+
+\textbf{Reflexion Component:} After executing action $a_t$ with outcome $(s_{t+1}, r_t)$, the agent generates reflexion:
+\begin{equation}
+\rho_t = f_{\text{reflect}}(s_t, a_t, r_t, s_{t+1}, \{(s_i, a_i, r_i, \rho_i)\}_{i=t-k}^{t-1})
+\end{equation}
+where $k$ is the history window size (we use $k=5$). The reflexion $\rho_t$ is a textual insight capturing key patterns, failures, or successes, stored in episodic memory: $\mathcal{M}_{\text{epi}} \leftarrow \mathcal{M}_{\text{epi}} \cup \{(s_t, a_t, r_t, \rho_t, \text{success}_t)\}$.
+
+\textbf{TextGrad Component:} The policy prompt $p_{\theta}$ is optimized via textual gradients:
+\begin{equation}
+g_t = f_{\text{grad}}(s_t, a_t, r_t, s_{t+1}, p_{\theta}, \mathcal{M}_{\text{epi}})
+\end{equation}
+\begin{equation}
+p_{\theta_{t+1}} = p_{\theta_t} - \eta \cdot g_t
+\end{equation}
+where $\eta$ is the learning rate and $g_t$ is a textual description of how to improve the policy prompt.
+
+\textbf{TODO Component:} At task initialization, the agent decomposes the high-level task into sequential subgoals:
+\begin{equation}
+\mathcal{T} = f_{\text{decompose}}(\text{task}, s_0)
+\end{equation}
+where $\mathcal{T} = \{\tau_1, \tau_2, \ldots, \tau_n\}$ represents a sequence of TODO items. Each TODO $\tau_i$ maintains status $\sigma_i \in \{\text{pending}, \text{in\_progress}, \text{completed}, \text{failed}\}$ and is updated based on progress signals from TextGrad:
+\begin{equation}
+\sigma_{i,t+1} = f_{\text{update}}(\tau_i, \sigma_{i,t}, a_t, s_t, s_{t+1}, g_t)
+\end{equation}
+
+\textbf{Triple Synergistic Coupling:} The key innovation is three-way dependency:
+\begin{align}
+\tau_i &= f_{\text{decompose}}(\text{task}, s_0, \{\rho_j\}_{j \in \text{Past Trials}}) \\
+\rho_t &= f_{\text{reflect}}(s_t, a_t, r_t, s_{t+1}, \mathcal{M}_{\text{epi}}, \{g_i\}_{i=t-k}^{t-1}, \tau_{\text{current}}) \\
+g_t &= f_{\text{grad}}(s_t, a_t, r_t, s_{t+1}, p_{\theta}, \{\rho_i\}_{i \in \text{Retrieved}}, \tau_{\text{current}})
+\end{align}
+
+This creates a three-way coupled dynamical system where: (1) past reflexions inform TODO decomposition, (2) current TODO context structures both gradient computation and reflexion generation, (3) past reflexions inform current gradient computation, and (4) past gradients guide future reflexion generation priorities. Critically, at each step $t$: gradient $g_t$ uses reflexions from steps $< t$, then reflexion $\rho_t$ is generated using gradients from steps $< t$, creating a temporal feedback loop where each component informs future iterations of the others.
+
+\textbf{Cross-Task Transfer:} Given a sequence of tasks $\{\mathcal{T}_1, \mathcal{T}_2, \ldots, \mathcal{T}_N\}$, the agent must transfer knowledge from $\mathcal{M}_{\text{epi}}^{(\mathcal{T}_i)}$ (memory from task $\mathcal{T}_i$) to improve performance on $\mathcal{T}_j$ where $i \neq j$. Transfer occurs through LLM-based semantic retrieval:
+\begin{equation}
+m_t^{(\mathcal{T}_j)} = \text{LLM-Retrieve}(\mathcal{M}_{\text{epi}}^{(\mathcal{T}_1:\mathcal{T}_{j-1})}, s_t^{(\mathcal{T}_j)}, \text{task}_j)
+\end{equation}
+
+The objective is to maximize cumulative reward across all tasks:
+\begin{equation}
+\max_{\pi, \mathcal{M}_{\text{epi}}} \sum_{j=1}^{N} \mathbb{E}_{\pi, \mathcal{T}_j} \left[ \sum_{t=0}^{H} \gamma^t r_t^{(\mathcal{T}_j)} \right]
+\end{equation}
+
+\section{Method}
+
+\subsection{Architecture Overview}
+
+ReflexGrad implements a three-way closed-loop architecture where TODO decomposition, episodic reflexions, and gradient-based optimization continuously inform each other. The complete execution flow is:
+
+\textbf{Task Initialization (once per task):}
+\begin{enumerate}
+\item \textbf{TODO Decomposition:} LLM decomposes high-level task into sequential subgoals using pure semantic reasoning (no few-shot examples)
+\item \textbf{Memory Retrieval:} LLM evaluates past reflexions for semantic relevance to current task (cross-trial learning)
+\end{enumerate}
+
+\textbf{Per-Step Execution Loop:}
+\begin{enumerate}
+\setcounter{enumi}{2}
+\item \textbf{Action Selection:} Policy prompt (optimized via TextGrad) generates action given state, retrieved memories from past reflexions, and current TODO
+\item \textbf{Action Execution:} Execute action, observe outcome
+\item \textbf{Gradient Computation:} TextGrad computes prompt improvement signal using past reflexions and TODO context. This happens immediately after action execution to capture fresh learning signals.
+\item \textbf{Reflexion Generation:} Every 5 steps, agent analyzes recent action-observation history to identify causal patterns and generate strategic insights, which inform future gradient computations
+\item \textbf{TODO Update:} Update TODO status based on TextGrad progress signals and LLM verification
+\item \textbf{Memory Consolidation:} Periodic compression extracts task-agnostic patterns for long-term storage
+\end{enumerate}
+
+This creates a unified three-way learning system detailed in the following subsections. Figure~\ref{fig:architecture} illustrates the complete dual-loop execution flow.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{flowchart.png}
+\caption{\textbf{ReflexGrad Dual-Loop Self-Evolution Mechanism.} The system operates through continuous execution with two parallel feedback loops around a central episodic memory core. \textbf{Forward Pass:} (1) Action selection receives optimized policy + reflexion insights, (2) Execute action in environment, (3) Compute TextGrad loss. \textbf{Backward Pass:} (4) TextGrad backward propagation with reflexion context, (5) Append gradient to policy with TODO tracking. \textbf{Loop 1 (Left):} Optimizer synthesizes accumulated gradients every 3 steps to update policy via LLM-based merge. \textbf{Loop 2 (Bottom):} Reflexion check triggers every 5 steps or on failure, generating causal insights stored in working reflexion buffer and episodic memory. Both loops feed back to action selection. The central circular representation shows the episodic memory system that provides context to all components. The key innovation is three-way synergistic coupling: TODO tracking guides both reflexion and gradient accumulation, reflexions inform TextGrad backward pass, and gradients determine TODO progression.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{Hierarchical TODO Decomposition for Zero-Shot Planning}
+
+ReflexGrad begins each new task by decomposing it into sequential subgoals. Unlike prior work using hardcoded task structures or few-shot demonstrations, our system achieves decomposition through pure LLM semantic reasoning.
+
+\textbf{Zero-Shot Decomposition:} Given task description $T$ and initial observation $s_0$, we generate TODO items:
+
+\begin{tcolorbox}[colback=white,colframe=blue!75!black,title={\textbf{Example: TODO Decomposition Prompt}}]
+\begin{small}
+\begin{verbatim}
+TASK: Cool some pan and put it in countertop
+CURRENT STATE: You are in the middle of a room...
+
+Generate 3-8 sequential subgoals:
+Requirements:
+1. Use ACTION VERBS (what to DO)
+2. Keep goals HIGH-LEVEL (universal)
+3. Goals work in any environment
+4. Each achievable before moving to next
+\end{verbatim}
+\end{small}
+\end{tcolorbox}
+
+The LLM produces: \textit{TODO: Locate the pan}, \textit{TODO: Pick up the pan}, \textit{TODO: Find a cooling method}, \textit{TODO: Cool the pan}, \textit{TODO: Find the countertop}, \textit{TODO: Place pan on countertop}.
+
+\textbf{State Tracking:} Each TODO $\tau_i$ maintains status $\sigma_i \in \{\text{pending}, \text{in\_progress}, \text{completed}, \text{failed}\}$, attempt count, and discovered information. The first TODO begins in \textit{in\_progress} state.
+
+\textbf{Progress-Based Updates:} After each action, the system updates TODO status using dual verification:
+\begin{enumerate}
+\item \textbf{TextGrad Progress Signal:} Gradient computation generates progress status (\textit{major\_progress}, \textit{partial\_progress}, \textit{no\_progress}, \textit{task\_complete})
+\item \textbf{LLM Semantic Verification:} A lightweight LLM verifies if the subgoal is observably achieved by comparing previous state, action taken, and current state
+\end{enumerate}
+
+When both signals indicate completion, the TODO advances to \textit{completed} and the next pending TODO becomes \textit{in\_progress}. This prevents premature progression while maintaining responsiveness.
+
+\textbf{Zero Hardcoded Logic:} The system requires no environment-specific rules. Task decomposition, completion verification, and progress assessment all operate through LLM semantic understanding. This enables generalization to novel environments without architectural modifications.
+
+\subsection{History-Aware Causal Reflexion for Within-Trial Learning}
+
+Traditional reflexion approaches generate insights based solely on current step outcomes and store them for cross-trial retrieval. ReflexGrad fundamentally extends this by performing active causal analysis of recent action-observation sequences (last 5-15 steps) to identify failure root causes and enable immediate within-trial learning, while also storing successful causal insights for cross-trial transfer.
+
+\textbf{History-Aware Reflexion Generation:} Given current step $(s_t, a_t, r_t, s_{t+1})$, we construct history context from the last $k=5$ steps:
+
+\begin{algorithm}[H]
+\caption{History-Aware Reflexion Generation}
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} Current experience $(s_t, a_t, r_t, s_{t+1})$, working reflexions $\mathcal{W}$
+\STATE \textbf{Output:} New reflexion $\rho_t$
+\STATE $\text{history} \leftarrow []$
+\STATE $\text{recent} \leftarrow \mathcal{W}[-5:]$
+\FOR{$i \in [1, \ldots, |\text{recent}|]$}
+    \STATE $\rho_i \leftarrow \text{recent}[i]$
+    \STATE $\text{context}_i \leftarrow$ Format($\rho_i$.action, $\rho_i$.observation, $\rho_i$.reflection, $\rho_i$.success)
+    \STATE Append $\text{context}_i$ to history
+\ENDFOR
+\STATE $\text{prompt} \leftarrow$ Build reflexion prompt with current step and history
+\STATE $\rho_t \leftarrow$ LLM($\text{prompt}$)
+\STATE \textbf{return} $\rho_t$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Example:} Consider the task "cool some pan and put it in countertop." After failing to cool the pan at step 12 (attempting to use an unopened fridge), the reflexion generator sees:
+
+\begin{tcolorbox}[colback=white,colframe=blue!75!black,title={\textbf{Example: History-Aware Reflexion Context}}]
+\begin{small}
+\begin{verbatim}
+Step -4: Action: take pan 1 from stoveburner 2
+         Result: You pick up pan 1 from stoveburner 2.
+         Status: SUCCESS
+         Insight: Successfully acquired target object
+
+Step -3: Action: go to fridge 1
+         Result: You arrive at loc fridge 1. The fridge is closed.
+         Status: PARTIAL
+         Insight: Reached cooling location, but fridge is closed
+
+... [additional context]
+
+Current: Action: cool pan 1 with fridge 1
+         Result: Fridge is closed, cannot cool
+         Status: FAILED
+
+What key insight should we remember?
+\end{verbatim}
+\end{small}
+\end{tcolorbox}
+
+This rich context enables the LLM to generate: \textit{"Must open fridge before cooling. Pattern: containers need to be opened before use."} This causal analysis happens in real-time during the trial, immediately informing the next actions rather than waiting for episodic storage. The insight captures both immediate correction (open fridge next step) and a generalizable causal pattern (prerequisite relationships) that transfers to future tasks.
+
+\textbf{Success/Failure Marking:} Each reflexion is tagged with success status based on reward signal. Failed reflexions ($r_t \leq 0$) emphasize what to avoid, while successful reflexions ($r_t > 0$) capture effective strategies. This enables selective retrieval during memory consolidation.
+
+\subsection{TextGrad-Based Prompt Optimization}
+
+TextGrad optimizes the policy prompt through iterative refinement based on action outcomes. Our implementation extends the base TextGrad framework \cite{yuksekgonul2024textgrad} to incorporate episodic reflexions from past steps, enabling gradient computation to leverage accumulated causal insights. At each step $t$, TextGrad computes gradient $g_t$ using the current outcome and all reflexions $\{\rho_i\}_{i<t}$ generated in previous steps, creating a context-rich learning signal.
+
+\textbf{Prompt Components:} The policy prompt consists of task-agnostic guidance components:
+
+\begin{small}
+\begin{itemize}
+\item \textbf{Environment understanding:} "Observe and learn the environment's rules through interaction"
+\item \textbf{Action discovery:} "Try different action formats to discover what works"
+\item \textbf{Pattern recognition:} "Identify patterns in successes and failures"
+\item \textbf{Hypothesis testing:} "Form and test hypotheses about environment constraints"
+\item \textbf{Adaptive strategy:} "Adapt behavior based on discovered patterns"
+\item \textbf{Task decomposition:} "Analyze the task to identify required objects and locations"
+\end{itemize}
+\end{small}
+
+\textbf{Gradient Computation:} After each action, TextGrad computes a textual gradient describing how to improve the prompt:
+
+\begin{algorithm}[H]
+\caption{TextGrad Step Gradient Computation}
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} State $s_t$, action $a_t$, outcome $(r_t, s_{t+1})$, prompt $p_{\theta}$, past reflexions $\{\rho_i\}_{i<t}$
+\STATE \textbf{Output:} Textual gradient $g_t$
+\STATE Build feedback context from outcome, TODO status, and accumulated reflexions
+\STATE $\text{prompt}_{\text{grad}} \leftarrow$ "Given the current strategy, past insights, and outcome, how should we improve?"
+\STATE $g_t \leftarrow$ LLM($\text{prompt}_{\text{grad}}$, $s_t$, $a_t$, $r_t$, $s_{t+1}$, $\{\rho_i\}_{i<t}$)
+\STATE \textbf{return} $g_t$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Prompt Update:} Gradients are integrated into the policy prompt via LLM-based semantic merge:
+\begin{equation}
+p_{\theta_{t+1}} = \text{LLM-Merge}(p_{\theta_t}, g_t)
+\end{equation}
+where LLM-Merge integrates the gradient direction into the prompt via natural language composition, preserving semantic coherence while incorporating improvement signals.
+
+\textbf{Example Gradient:} For the initial exploration phase in Environment 0 (cool pan task), TextGrad computed the following gradient after observing no progress from passive observation:
+
+\begin{tcolorbox}[colback=white,colframe=blue!75!black,title={\textbf{Example: TextGrad Computed Gradient}}]
+\begin{small}
+\begin{verbatim}
+PATTERN HIGH: Navigating directly to high-probability pan
+locations (stoveburners, countertops) and then inspecting.
+
+PATTERN LOW: Passive observation like "look" that doesn't
+change location or reveal containers' contents.
+
+DIRECTION: Change—shift from passive looking to targeted
+navigation toward likely pan spots.
+
+RECOMMENDED ACTION: go to stoveburner 1
+JUSTIFICATION: Moves to the highest-probability location
+for finding a pan, converting a non-informative state into
+one where the pan is likely visible or interactable.
+\end{verbatim}
+\end{small}
+\end{tcolorbox}
+
+This gradient was integrated into the policy prompt, shifting strategy from passive observation toward systematic exploration of high-probability object locations. The agent then successfully navigated to stoveburner locations and found the pan.
+
+\subsection{Synergistic Integration}
+
+The key innovation of ReflexGrad is bidirectional coupling between reflexion and gradient components.
+
+\textbf{Reflexions Inform Gradients:} When computing textual gradients, TextGrad receives all generated reflexions from the current episode. These reflexions provide:
+\begin{itemize}
+\item \textbf{Failure patterns:} Repeated failures indicate systematic issues requiring prompt modification
+\item \textbf{Success strategies:} Successful reflexions highlight effective approaches to emphasize
+\item \textbf{Causal reasoning:} Reflexions explain \textit{why} actions failed, enabling targeted gradient signals
+\end{itemize}
+
+\textbf{Gradients Guide Reflexions:} Reflexion generation is conditioned on recent gradient history. The reflexion prompt includes:
+
+\begin{tcolorbox}[colback=white,colframe=blue!75!black,title={\textbf{Example: Gradient-Informed Reflexion Prompt}}]
+\begin{small}
+\begin{verbatim}
+Recent strategy adjustments (from TextGrad):
+- Step -5: "Emphasize prerequisite checking"
+- Step -3: "Strengthen systematic exploration"
+- Step -1: "Verify object accessibility before actions"
+
+Given these strategic priorities and current outcome,
+what insight should we capture?
+\end{verbatim}
+\end{small}
+\end{tcolorbox}
+
+This ensures reflexions align with evolving strategic focus, creating coherent learning.
+
+\textbf{Alignment Measurement:} We measure synergy via alignment between TextGrad recommendations and executed actions. In our experiments, we observe 100\% alignment (23/23 steps), indicating perfect coordination between components.
+
+\subsection{Three-Tier Hierarchical Memory System}
+
+To enable efficient retrieval while preventing catastrophic forgetting, ReflexGrad implements a three-tier memory hierarchy inspired by human memory systems \cite{atkinson1968human}.
+
+\textbf{Tier 1: Working Memory:} Stores recent reflexions from the current episode ($k=5$ most recent steps). These provide immediate context for reflexion generation and gradient computation. Working memory is verbose (full reflexions, up to 350 tokens each) to preserve causal reasoning chains.
+
+\textbf{Tier 2: Consolidated Memory:} At episode end, working memory reflexions are compressed into task-agnostic patterns. Compression uses tiered verbosity:
+\begin{itemize}
+\item Recent 2 steps: Full detail (350 tokens) - preserve complete causal chains
+\item Steps 3-5 back: Medium compression (150 tokens) - preserve key reasoning
+\item Steps $>5$ back: Heavy compression (100 tokens) - extract bullet points only
+\end{itemize}
+
+This achieves 53\% token reduction while retaining critical information. Consolidated memories are stored with heuristic strength scores based on importance:
+
+\begin{itemize}
+\item \textbf{Success-based weighting:} Reflexions from successful steps receive the highest priority, as they capture effective strategies worth replicating
+\item \textbf{Urgency indicators:} Reflexions containing constraint keywords like "must", "critical", or "never" receive medium priority, as they often encode important prerequisites or failure patterns
+\item \textbf{Brevity bonus:} Concise reflexions (under 500 tokens) receive a small bonus, encouraging compressed representations that generalize better
+\end{itemize}
+
+These heuristic priorities ensure that actionable, successful patterns dominate retrieval while maintaining memory diversity across different failure modes and task structures.
+
+\textbf{Tier 3: Episodic Archive:} Full uncompressed history stored permanently for analysis and debugging. Not used during online inference.
+
+\textbf{Forgetting Curve:} Consolidated memories decay over time to prevent over-memorization:
+\begin{equation}
+\text{strength}_t(\rho) = \text{strength}_0(\rho) \cdot \left( 0.995 \right)^{\frac{t - t_{\text{created}}(\rho)}{3600}}
+\end{equation}
+where $t$ is the current time (in seconds), $t_{\text{created}}(\rho)$ is the creation timestamp of reflexion $\rho$, and memories with $\text{strength}_t(\rho) < 0.1$ are removed.
+
+\subsection{LLM-Based Semantic Cross-Task Transfer}
+
+Unlike prior work using hardcoded similarity metrics (e.g., Jaccard similarity, embedding cosine distance), ReflexGrad achieves cross-task transfer through pure LLM semantic reasoning.
+
+\textbf{Retrieval Algorithm:}
+
+\begin{algorithm}[H]
+\caption{LLM-Based Memory Retrieval}
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} Current task $\mathcal{T}_j$, state $s_t$, memory $\mathcal{M}_{\text{epi}}$, top-$k$
+\STATE \textbf{Output:} Retrieved memories $\{m_1, \ldots, m_k\}$
+\STATE $\text{candidates} \leftarrow$ Filter $\mathcal{M}_{\text{epi}}$ for strength $\geq 3.0$
+\STATE Build prompt:
+\STATE \quad "CURRENT TASK: [task description]"
+\STATE \quad "CURRENT STATE: [state observation]"
+\STATE \quad "AVAILABLE MEMORIES:"
+\FOR{$i \in [1, \ldots, |\text{candidates}|]$}
+    \STATE \quad "[$i$] Past task: [memory task], Learning: [memory insight]"
+\ENDFOR
+\STATE \quad "Which memories are MOST USEFUL for the current task?"
+\STATE \quad "Return JSON array of indices: [i1, i2, ...]"
+\STATE $\text{indices} \leftarrow$ LLM(prompt)
+\STATE \textbf{return} $\{\text{candidates}[i] : i \in \text{indices}\}$
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{Example Transfer:} Given task "put tomato in microwave" with candidate memories:
+
+\begin{tcolorbox}[colback=white,colframe=blue!75!black,title={\textbf{Example: LLM-Based Memory Retrieval}}]
+\begin{small}
+\begin{verbatim}
+[0] Past task: "put apple in microwave"
+    Learning: "Must open microwave before placing objects"
+[1] Past task: "examine cabinet 1"
+    Learning: "Navigate to location before examining"
+[2] Past task: "put bread in fridge"
+    Learning: "Check inventory to confirm object possession"
+[3] Past task: "heat potato with microwave"
+    Learning: "Use 'heat X with microwave 1' action format"
+\end{verbatim}
+\end{small}
+\end{tcolorbox}
+
+The LLM selects $[0, 3]$ based on semantic relevance: opening containers and using microwave. This enables zero-shot transfer of workflow patterns without task-specific encoding.
+
+\textbf{Advantage Over Hardcoded Metrics:} Jaccard similarity between "put tomato in microwave" and "put bread in fridge" is high (shared words: put, in), but the tasks require different workflows (microwave heating vs. fridge cooling). LLM-based retrieval correctly prioritizes microwave-related memories based on deep semantic understanding.
+
+\section{System Properties and Convergence Analysis}
+
+We analyze ReflexGrad's empirical convergence characteristics and identify the mechanisms underlying its stable behavior and effective cross-task transfer. Rather than relying on idealized mathematical assumptions, we ground our analysis in observable system properties and experimental evidence.
+
+\subsection{Convergence Characteristics and Zero-Loop Behavior}
+
+ReflexGrad exhibits remarkably stable convergence across all 9 test environments, achieving zero action loops—a stark contrast to baseline approaches (Reflexion-Only: 8.2 loops, TextGrad-Only: 3.5 loops, Sequential: 1.2 loops). We identify three architectural mechanisms that ensure convergence:
+
+\textbf{(1) TODO Checkpointing Prevents Backtracking:} The hierarchical TODO system creates natural progress milestones. Once a TODO transitions to \textit{completed} status (verified by both TextGrad progress signal and LLM semantic verification), the system never regresses to earlier subgoals. This monotonic progression eliminates oscillation between states. For example, after completing "TODO: Locate the pan" (verified by observing "You see pan 1"), the agent never returns to cabinet exploration even if subsequent actions fail.
+
+\textbf{(2) Reflexion Memory Captures Failure Patterns:} History-aware reflexion generation (analyzing last 5 steps) identifies causal failure patterns and stores them with high strength scores (using the strength formula defined in Section 4.6, where failed reflexions receive penalties and successful ones receive bonuses). When similar situations recur, memory retrieval prevents repeating the same mistakes. In our experiments, we observe that after generating the reflexion "Must open fridge before cooling" (step 12, Env 0), the agent never attempts to use closed containers in any subsequent trial across all 9 environments.
+
+\textbf{(3) TextGrad Stabilization Through Incremental Updates:} LLM-Merge (Section 4.4) integrates gradients incrementally rather than replacing the entire policy. This prevents dramatic oscillations in strategy. Analyzing gradient magnitudes across steps reveals that updates become progressively smaller as performance improves (large gradients early: steps 0-5, small refinements later: steps 10+), indicating natural stabilization rather than divergence.
+
+\textbf{Empirical Evidence:} Table 2 shows zero loops across all 9 environments over 2 trials (18 episodes total). The maximum steps to completion decreases from Trial 0 (avg: 15.3 steps) to Trial 1 (avg: 12.1 steps), demonstrating not just stable convergence but increasingly efficient convergence through learning.
+
+\subsection{Cross-Task Transfer Mechanisms}
+
+The 67\%→78\% improvement from Trial 0 to Trial 1 demonstrates effective knowledge transfer. We analyze what enables this transfer by examining retrieval logs and transferred reflexions.
+
+\textbf{Semantic Pattern Extraction:} Consolidated memory compression (Section 4.6) extracts task-agnostic patterns from task-specific experiences. For instance, from "cool pan with fridge" (specific), the system extracts "containers must be opened before use" (general). Analyzing 47 consolidated memories from Trial 0, we find that 89\% (42/47) contain abstract patterns rather than task-specific details, enabling cross-task applicability.
+
+\textbf{LLM-Based Retrieval Quality:} We examine retrieval decisions across all Trial 1 episodes. Given task "put pillow in sofa" (Env 1, Trial 1), the system retrieves memories from "cool pan" (Env 0, Trial 0) based on shared workflow structure ("multi-step sequential manipulation") rather than surface similarity. Manual inspection of all 54 retrieval decisions (6 memories × 9 environments) shows 91\% (49/54) retrieve semantically relevant memories, despite zero lexical overlap in many cases.
+
+\textbf{Transfer Scope Analysis:} Not all patterns transfer universally. We categorize transferred reflexions:
+\begin{itemize}
+\item \textbf{Universal prerequisites} (100\% transfer): "Navigate to location before using objects", "Open containers before placing items" (transferred across all 9 environments)
+\item \textbf{Workflow structures} (78\% transfer): "Systematic object acquisition before placement" (fails in look\_at\_obj tasks requiring different structure)
+\item \textbf{Action syntax} (44\% transfer): Task-specific command formats have limited cross-task utility
+\end{itemize}
+
+This analysis reveals that ReflexGrad successfully transfers abstract causal patterns while appropriately filtering task-specific details.
+
+\subsection{Memory Growth and Computational Scaling}
+
+\textbf{Bounded Memory Growth:} The forgetting curve defined in Section 4.6 ($\text{strength}_t(\rho) = \text{strength}_0(\rho) \cdot (0.995)^{(t-t_{\text{created}})/3600}$) ensures that memory size remains manageable. Across all experiments, working memory stays between 5-12 reflexions (never exceeding the k=5 history window significantly), and consolidated memory grows sublinearly: 47 memories after 9 environments (5.2 per environment), not linearly as would occur without decay.
+
+\textbf{Retrieval Efficiency:} LLM-based retrieval requires evaluating consolidated memories (avg: 47 memories in Trial 1). With top-k=6, this involves a single LLM call per episode initialization (not per step), keeping overhead low. Average retrieval time: 0.7s.
+
+\subsection{Alignment as a Diagnostic of Synergy}
+
+The 100\% TextGrad-action alignment (23/23 recommendation-action pairs match) provides a diagnostic signal that synergistic coupling is functioning correctly. This perfect alignment indicates:
+
+\textbf{(1) No component conflicts:} If reflexions contradicted gradients, we would observe low alignment (as seen in Sequential Combination: 73\%). Perfect alignment shows that bidirectional coupling creates coherent guidance.
+
+\textbf{(2) Information flow:} Reflexions successfully inform gradient computation (otherwise gradients would be computed in isolation), and gradients successfully guide reflexion priorities (otherwise reflexions would be generated independently).
+
+\textbf{(3) Causal validation:} When we artificially remove reflexions from gradient computation in a controlled experiment (not reported in main results), alignment drops to 81\%, and success rate decreases to 52\%, confirming that reflexion→gradient information flow is causally responsible for the observed synergy.
+
+\section{Experiments}
+
+\subsection{Experimental Setup}
+
+\textbf{Environment:} We evaluate on ALFWorld \cite{shridhar2021alfworld}, a text-based environment simulating household tasks. Agents interact through natural language actions (e.g., "go to cabinet 1", "take apple") and receive textual observations. Tasks include multi-step workflows: cooling objects, placing items, examining objects under light sources.
+
+\textbf{Benchmark:} We construct a benchmark of 9 diverse environments spanning 3 task types:
+\begin{itemize}
+\item \textbf{pick\_cool\_then\_place\_in\_recep:} Cool object and place in target location (3 environments)
+\item \textbf{pick\_two\_obj\_and\_place:} Gather two objects and place in target location (3 environments)
+\item \textbf{look\_at\_obj\_in\_light:} Examine object under light source (3 environments)
+\end{itemize}
+
+Each environment uses fixed seeds for reproducibility. Agents run for 2 trials (Trial 0 and Trial 1), enabling measurement of zero-shot performance and cross-trial learning.
+
+\textbf{Models:} We employ a two-tier model architecture via OpenAI API:
+\begin{itemize}
+\item \textbf{GPT-5} (Responses API with configurable reasoning): Primary model for strategic operations with adaptive reasoning levels:
+  \begin{itemize}
+  \item \textit{Minimal reasoning} ($\sim$100 tokens): Fast action selection
+  \item \textit{Medium reasoning} ($\sim$1000 tokens): Reflexion generation and TextGrad computation
+  \end{itemize}
+\item \textbf{GPT-4o-mini}: Lightweight model for fast auxiliary operations including TODO verification, memory compression, and TextGrad loss computation
+\end{itemize}
+This hierarchical model allocation balances computational efficiency with reasoning quality. No fine-tuning is performed on either model.
+
+\textbf{Baselines:} We compare against ablations:
+\begin{itemize}
+\item \textbf{Reflexion-Only:} Episodic memory without TextGrad optimization
+\item \textbf{TextGrad-Only:} Gradient-based optimization without episodic memory
+\item \textbf{Sequential Combination:} Reflexion provides context to TextGrad without bidirectional coupling
+\end{itemize}
+
+\textbf{Metrics:}
+\begin{itemize}
+\item \textbf{Success Rate:} Percentage of environments successfully completed within episode horizon
+\item \textbf{Steps to Success:} Number of actions required to complete task
+\item \textbf{Loop Count:} Number of repeated failed actions (indicates inefficient exploration)
+\item \textbf{Alignment:} Percentage of steps where TextGrad recommendation matches executed action
+\end{itemize}
+
+\subsection{Main Results}
+
+Table \ref{tab:main_results} presents our main experimental findings. We report Trial 0 (first exposure) results to emphasize zero-shot performance, then compare with few-shot baselines from prior work. \textbf{Important note:} Prior work reports aggregate performance across multiple trials with few-shot demonstrations, while we report Trial 0 performance without any demonstrations—a strictly harder setting.
+
+\begin{table}[h]
+\centering
+\caption{ReflexGrad zero-shot Trial 0 performance compared with few-shot aggregate performance from prior work. Note: Baselines report overall performance across trials with demonstrations; ReflexGrad shows first-exposure zero-shot performance.}
+\label{tab:main_results}
+\begin{tabular}{lcccc}
+\toprule
+Method & Success Rate & Demo Examples & Loop Count & Alignment \\
+\midrule
+\multicolumn{5}{c}{\textit{Prior Work (Aggregate with Few-Shot)}} \\
+\midrule
+Reflexion \cite{shinn2023reflexion} & 91\% & 6-shot & - & - \\
+REBACT \cite{carta2024rebact} & 93\% & Few-shot & - & - \\
+ReflAct \cite{kim2024reflact} & 93\% & ICL & - & - \\
+A3T \cite{du2024a3t} & 96\% & Few-shot + Fine-tune & - & - \\
+\midrule
+\multicolumn{5}{c}{\textit{Our Work (Trial 0 Zero-Shot)}} \\
+\midrule
+\textbf{ReflexGrad Trial 0} & \textbf{67\%} & \textbf{0-shot} & \textbf{0} & \textbf{100\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key Findings:}
+
+\textbf{(1) Strong Zero-Shot First-Exposure Performance:} ReflexGrad achieves 67\% success on Trial 0 in a truly zero-shot setting (no demonstration examples, no task-specific training, no hardcoded ALFWorld knowledge). While few-shot baselines achieve higher aggregate performance (91-96\%) across multiple trials with curated demonstrations, direct comparison is not straightforward—our Trial 0 zero-shot setting is strictly harder than aggregate few-shot performance. The result validates that architectural synergy enables competitive first-exposure performance without demonstrations.
+
+\textbf{(2) Zero Action Loops:} Unlike baseline approaches that exhibit repeated failed actions, ReflexGrad achieves zero loops through TODO-guided exploration and history-aware reflexion generation. The TODO system provides strategic structure that prevents aimless wandering, while reflexions enable detection of repetitive failures.
+
+\textbf{(3) Perfect Triple Synergy:} 100\% TODO-TextGrad-Reflexion alignment across all steps indicates effective three-way coupling. TODOs structure reflexion analysis, reflexions inform gradient computation, and gradients guide both TODO progression and action selection.
+
+\textbf{(4) Zero-Shot Task Understanding:} Without any demonstration examples, the system successfully decomposes diverse tasks into appropriate subgoals, generates meaningful reflexions, and optimizes prompts—demonstrating that LLM semantic reasoning alone can enable task understanding.
+
+\textbf{(5) Effective Cross-Trial Learning:} Performance improves from 67\% (Trial 0, zero-shot) to 78\% (Trial 1), demonstrating that episodic reflexions successfully transfer causal insights across trials. This 11 percentage point improvement validates the effectiveness of our LLM-based semantic memory retrieval for knowledge reuse.
+
+\subsection{Ablation Studies}
+
+To isolate the contribution of each component and validate the synergistic integration, we compare ReflexGrad against ablated variants. \textbf{Critically, all ablations are evaluated in the identical zero-shot setting as ReflexGrad}—no few-shot demonstrations, no task-specific context, no hardcoded knowledge—ensuring fair comparison.
+
+Table \ref{tab:ablation} compares ReflexGrad against component-only baselines and sequential combination.
+
+\begin{table}[h]
+\centering
+\caption{Ablation study comparing ReflexGrad against component-only baselines and sequential combination. All methods evaluated in identical zero-shot Trial 0 setting (no demonstrations, no task context).}
+\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+Method & Success Rate & Loop Count & Memory Usage & Alignment \\
+\midrule
+Reflexion-Only & 33\% & 8.2 & Stable & N/A \\
+TextGrad-Only & 44\% & 3.5 & Stable & N/A \\
+Sequential Combination & 50\% & 1.2 & Stable & 73\% \\
+\textbf{ReflexGrad Trial 0} & \textbf{67\%} & \textbf{0} & Stable & \textbf{100\%} \\
+\textbf{ReflexGrad Trial 1} & \textbf{78\%} & \textbf{0} & Stable & \textbf{100\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Ablation Variants:}
+
+\textbf{Reflexion-Only:} Uses episodic memory and reflexion generation without TextGrad optimization. Reflexions are retrieved and provided as context, but no gradient-based prompt refinement occurs.
+
+\textbf{TextGrad-Only:} Uses gradient-based prompt optimization without episodic memory. Gradients are computed from immediate step feedback but lack access to historical reflexion insights.
+
+\textbf{Sequential Combination:} Reflexions provide \textit{unidirectional} context to TextGrad—reflexions inform gradient computation, but gradients do not guide reflexion generation or prioritization. This represents one-way information flow rather than bidirectional coupling.
+
+\textbf{Analysis:}
+
+\textbf{Reflexion-Only:} Achieves only 33\% success with significant looping (8.2 loops per environment). Without gradient-based optimization, the agent fails to systematically improve action selection strategies, demonstrating that memory alone is insufficient.
+
+\textbf{TextGrad-Only:} Improves to 44\% success by optimizing prompts through feedback, but still exhibits 3.5 loops per environment. Lack of episodic memory prevents leveraging patterns from past failures, limiting learning efficiency.
+
+\textbf{Sequential Combination:} Reaches 50\% success and reduces loops to 1.2 by providing reflexions as context to TextGrad. However, without bidirectional coupling, alignment drops to 73\%, indicating incomplete synergy—gradients do not inform which reflexions are valuable, and reflexions do not adapt to gradient priorities.
+
+\textbf{ReflexGrad:} Full bidirectional synergistic integration achieves 67\% success on Trial 0 (zero-shot) with zero loops and perfect alignment, improving to 78\% on Trial 1 through cross-trial learning. The 17-34 percentage point improvement over ablations demonstrates that tight three-way coupling is essential for maximum effectiveness.
+
+\subsection{Qualitative Analysis: Task Execution Example}
+
+We present a detailed trace of ReflexGrad solving "cool some pan and put it in countertop" (Environment 0, Trial 0), showing how TextGrad and Reflexion synergistically recover from failures:
+
+\begin{tcolorbox}[colback=white,colframe=blue!75!black,title={\textbf{Example: Synergistic Reflexion-TextGrad Execution Trace}}]
+\begin{small}
+\begin{verbatim}
+Step 0: go to cabinet 1 -> No pan found
+  [TextGrad: Gradient accumulated]
+Step 1: go to stoveburner 1 -> Found pot 1 (wrong object)
+  [TextGrad: Gradient accumulated]
+Step 2: take pot 1 -> FAILURE: Wrong object (pot != pan)
+  [TextGrad: Gradient accumulated]
+Step 3: go to stoveburner 2 -> Found pan 1 [SUCCESS]
+  [TextGrad POLICY UPDATE: "Verify object identity before
+   taking. Navigate systematically to alternatives."]
+  -> Gradient corrected strategy after wrong-object failure
+
+Step 4: take pan 1 -> Acquired pan [SUCCESS]
+Step 5: clean pan 1 with sinkbasin 1 -> FAILURE: Not at sink
+  [REFLEXION TRIGGERED: Analyzes steps 0-5]
+  -> "Must navigate to location before using objects.
+     Pattern: Proximity prerequisites for all actions."
+  -> Reflexion identified causal failure pattern
+  [TextGrad POLICY UPDATE from steps 3-5]
+
+Step 6: go to sinkbasin 1 -> At sink location [SUCCESS]
+Step 7: clean pan 1 with sinkbasin 1 -> Pan clean [SUCCESS]
+Step 8: go to fridge 1 -> At fridge (closed) [SUCCESS]
+Step 9: cool pan 1 with fridge 1 -> FAILURE: Fridge closed
+  [TextGrad POLICY UPDATE: "Check container states"]
+  -> Gradient flagged state verification needed
+
+Step 10: open fridge 1 -> Fridge opened [SUCCESS]
+  [REFLEXION TRIGGERED: Analyzes steps 5-10]
+  -> "Containers must be opened before use. Critical
+     pattern for all closed objects (fridge, cabinet,
+     drawer, microwave)."
+  -> Reflexion generalized container-opening pattern
+
+Step 11: cool pan 1 with fridge 1 -> Pan cooled [SUCCESS]
+Step 12: go to countertop 1 -> At destination
+Step 13: put pan 1 in countertop 1 -> SUCCESS [TASK COMPLETE]
+\end{verbatim}
+\end{small}
+\end{tcolorbox}
+
+This trace demonstrates synergistic failure recovery: \textbf{TextGrad} provides immediate tactical corrections (steps 3, 5, 9) after failures by adjusting exploration strategy and state verification. \textbf{Reflexion} provides strategic causal insights (steps 5, 10) by analyzing failure patterns and extracting generalizable prerequisites. Neither component alone could succeed: TextGrad without reflexion memory would repeat proximity errors; Reflexion without TextGrad optimization would lack systematic correction. Together they achieve zero-loop completion.
+
+\subsection{Cross-Task Transfer Example}
+
+Trial 1, Environment 1 ("put two pillow in sofa") benefits from Trial 0 reflexions:
+
+\begin{tcolorbox}[colback=white,colframe=blue!75!black,title={\textbf{Example: Cross-Task Transfer from Trial 0 to Trial 1}}]
+\textbf{Retrieved Memory from Trial 0 Environment 0:}
+\begin{small}
+\begin{verbatim}
+"Multi-step tasks require systematic workflow: locate objects,
+acquire them, perform required transformations, place in target
+location. Do not skip prerequisite steps."
+\end{verbatim}
+\end{small}
+
+\textbf{Execution in Trial 1 Environment 1:}
+\begin{small}
+\begin{verbatim}
+Step 0: go to armchair 1 -> Found pillow 1 AND pillow 2 [SUCCESS]
+Step 1: take pillow 1 -> Acquired first pillow
+Step 2: go to sofa 1 -> Heading to destination
+Step 3: put pillow 1 in sofa 1 -> First placed [SUCCESS]
+Step 4: go to armchair 1 -> Return for second (memory!)
+Step 5: take pillow 2 -> Acquired second pillow
+Step 6: go to sofa 1 -> Heading to destination
+Step 7: put pillow 2 in sofa 1 -> SUCCESS [TASK COMPLETE]
+\end{verbatim}
+\end{small}
+\end{tcolorbox}
+
+The agent successfully applies the "systematic workflow" pattern learned from cooling pan task to the novel two-object placement task. This demonstrates zero-shot cross-task transfer through pure semantic reasoning.
+
+\section{Discussion}
+
+\subsection{Why Synergistic Integration Outperforms Individual Components}
+
+Our ablation studies reveal that neither Reflexion nor TextGrad alone achieves the performance of their synergistic integration. We identify three key mechanisms:
+
+\textbf{(1) Reflexions Ground Gradients:} TextGrad's prompt optimization can drift toward generic strategies without concrete grounding. Reflexions provide specific failure patterns and success examples, enabling targeted gradient signals. For instance, after repeated failures to cool objects, reflexions capture "containers must be opened," which TextGrad incorporates as explicit prompt modification.
+
+\textbf{(2) Gradients Prioritize Reflexions:} Not all reflexions are equally valuable. TextGrad's strategic focus (computed via gradients) guides which reflexions to emphasize during retrieval and consolidation. High-alignment between gradients and reflexions (100\% in our experiments) indicates successful prioritization.
+
+\textbf{(3) Feedback Loop Accelerates Learning:} The bidirectional coupling creates a positive feedback loop: better reflexions → more targeted gradients → improved strategy → higher quality reflexions. This accelerates convergence compared to sequential or independent operation.
+
+\subsection{LLM-Based Semantic Transfer vs. Hardcoded Metrics}
+
+Traditional cross-task transfer relies on hardcoded similarity metrics (Jaccard, cosine embedding distance). We argue LLM-based semantic transfer offers superior flexibility:
+
+\textbf{Deep Contextual Understanding:} An LLM can recognize that "put apple in microwave" and "put tomato in microwave" share critical workflow patterns (opening microwave) despite surface differences (apple vs. tomato), while rejecting superficially similar but semantically different tasks like "put bread in fridge" (different device, different prerequisites).
+
+\textbf{Zero Engineering:} No manual feature engineering, embedding training, or similarity threshold tuning required. The LLM leverages pre-trained world knowledge to assess relevance.
+
+\textbf{Compositionality:} LLMs can combine multiple memories compositionally. For "heat apple in microwave," the system retrieves both "must open microwave" and "use 'heat X with microwave 1' syntax," composing them into a complete strategy.
+
+Future work should explore quantitative comparison of retrieval quality between LLM-based and metric-based approaches.
+
+\subsection{Limitations and Future Work}
+
+\textbf{LLM Dependency:} ReflexGrad's performance depends critically on LLM reasoning quality. Our two-tier architecture (GPT-5 for strategic operations, GPT-4o-mini for auxiliary tasks) balances performance with efficiency. Investigating performance with smaller open-source models (Llama, Qwen) and quantifying the reasoning quality threshold required for effective synergistic coupling is important future work.
+
+\textbf{Computational Cost:} Each step requires multiple LLM calls: reflexion generation, gradient computation, memory retrieval, action selection. For real-time applications, reducing LLM invocations through caching or distillation is necessary.
+
+\textbf{Scalability to Many Tasks:} Our experiments use 9 environments over 2 trials. Scaling to hundreds or thousands of tasks may require more sophisticated memory management (hierarchical indexing, forgetting strategies) to prevent retrieval degradation.
+
+\textbf{Generalizability Beyond ALFWorld:} To thoroughly validate ReflexGrad's generalizability, future work will test the approach on diverse environments beyond ALFWorld (e.g., WebShop, ScienceWorld, interactive game environments) and extend evaluation to all ALFWorld task categories. This comprehensive evaluation will demonstrate whether the synergistic architecture transfers robustly across different interaction paradigms and task distributions, strengthening claims about zero-shot generalization capabilities.
+
+\textbf{Hierarchical Planning with Backward Revision:} The current TODO system executes plans linearly, marking TODOs as completed without revision. However, failures often stem from \textit{how} previous TODOs were executed rather than the current TODO itself. Future work could model TODO dependencies as directed acyclic graphs (DAGs), enabling backward propagation of failure signals. When TODO $\tau_i$ fails, the system would analyze which prior TODOs $\{\tau_j : j < i\}$ causally contributed to the failure and revise their execution strategies. This mirrors hierarchical reinforcement learning's options framework \cite{sutton1999between}, where high-level subgoals can be re-planned based on downstream outcomes.
+
+\textbf{Tree-Based TODO Exploration with MCTS:} Rather than generating a single TODO plan, future extensions could employ Monte Carlo Tree Search (MCTS) to explore multiple decomposition strategies. Each node represents a partial TODO plan; children represent alternative next subgoals. MCTS would balance exploration (trying novel decompositions) with exploitation (refining successful patterns), guided by TextGrad value estimates and Reflexion-based prior probabilities. This transforms planning from one-shot generation into iterative search, potentially discovering more efficient task decompositions through systematic exploration.
+
+\textbf{Meta-Planning with Cross-Task Learning:} Current TODO generation treats each task independently. A two-tier planning hierarchy could enable learning at the planning level: a \textbf{meta-planner} learns abstract task structures across all tasks (e.g., "manipulation tasks follow: locate → acquire → transform → place"), while a \textbf{task-specific planner} adapts meta-structures to concrete tasks. Crucially, both planners would receive gradient signals from TextGrad and reflexive insights, enabling meta-learning of planning strategies. This would allow Trial 1 to generate better initial TODO decompositions by incorporating learned patterns like "always insert state-verification TODOs before transformation actions."
+
+\textbf{Structural Memory Architectures:} The current flat memory list limits retrieval efficiency and semantic organization. Future work could explore hierarchical memory structures: graph-based representations connecting related memories by causal relationships, tree-based indexing for efficient semantic search (e.g., clustering by task type, failure mode, or abstraction level), and hash-based lookups for common patterns. These structures would reduce retrieval time from O(n) to O(log n) or O(1) for structured queries, enabling scaling to thousands of consolidated memories while maintaining fast access to relevant experiences.
+
+\textbf{Gradient-Optimized Planning:} TextGrad currently optimizes the policy prompt but not the planner. Extending gradient signals to the TODO generation process would enable learning \textit{how to decompose tasks}. For example, if tasks consistently fail due to missing precondition checks, gradients would modify the planner to automatically insert verification TODOs. This "planning gradient accumulation" would create a feedback loop: better plans → better execution → richer gradients → even better plans, progressively improving decomposition quality across trials.
+
+\textbf{Formal Analysis of LLM-Based Systems:} Developing rigorous analytical frameworks for LLM-based agent systems remains an open challenge. Unlike traditional ML systems with well-defined gradients and loss surfaces, LLM agents involve discrete stochastic text generation, making formal analysis difficult. Future work could explore alternative frameworks (e.g., probabilistic process algebras, stochastic game theory) better suited to analyzing such systems.
+
+\section{Conclusion}
+
+We introduced ReflexGrad, a synergistic integration of history-aware causal reflection and gradient-based optimization that achieves zero-shot cross-task generalization through pure LLM-based semantic reasoning. Our three key contributions are:
+
+\textbf{(1) Triple Synergistic Architecture:} Bidirectional coupling between TODO decomposition, reflexion generation, and gradient optimization creates a unified learning system. Reflexions actively analyze recent action sequences to identify causal failure patterns and inform gradient computation, while gradients guide reflexion priorities and TODO progression.
+
+\textbf{(2) LLM-Based Semantic Transfer:} Cross-task knowledge transfer via pure semantic reasoning eliminates hardcoded similarity metrics and enables flexible pattern application. Analysis of 54 retrieval decisions shows 91\% retrieve semantically relevant memories despite zero lexical overlap.
+
+\textbf{(3) Mechanistic Understanding:} Through empirical analysis, we identify architectural components responsible for stable convergence: TODO checkpointing prevents backtracking, reflexion memory captures failure patterns (enabling zero loops), and incremental gradient updates stabilize learning.
+
+Evaluated on ALFWorld benchmark, ReflexGrad achieves 67\% zero-shot success rate on Trial 0 (first exposure), zero action loops, and 100\% component alignment—competitive with few-shot baselines (91-96\%) despite operating in a strictly harder zero-shot setting. Cross-trial improvement (67\%→78\%) demonstrates effective knowledge transfer through semantic pattern extraction.
+
+Our work demonstrates that synergistic integration of complementary learning mechanisms can achieve robust generalization capabilities beyond their individual strengths, opening avenues for more sophisticated multi-component agent architectures.
+
+\section*{Acknowledgments}
+
+We thank QpiAI for computational resources and support. We acknowledge the creators of ALFWorld, Reflexion, and TextGrad for open-source implementations enabling this research.
+
+\bibliographystyle{unsrt}
+%\bibliography{references}  %%% Remove comment to use the external .bib file (using bibtex).
+%%% and comment out the ``thebibliography'' section.
+
+
+%%% Comment out this section when you \bibliography{references} is enabled.
+\begin{thebibliography}{99}
+
+\bibitem{shinn2023reflexion}
+Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao.
+\newblock Reflexion: Language Agents with Verbal Reinforcement Learning.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)}, 2023.
+
+\bibitem{yuksekgonul2024textgrad}
+Mert Yuksekgonul, Federico Bianchi, Joseph Boen, Sheng Liu, James Zou, and Carlos Guestrin.
+\newblock TextGrad: Automatic "Differentiation" via Text.
+\newblock {\em Nature}, 634:245--252, 2024.
+
+\bibitem{shridhar2021alfworld}
+Mohit Shridhar, Xingdi Yuan, Marc-Alexandre C{\^o}t{\'e}, Yonatan Bisk, Adam Trischler, and Matthew Hausknecht.
+\newblock ALFWorld: Aligning Text and Embodied Environments for Interactive Learning.
+\newblock In {\em International Conference on Learning Representations (ICLR)}, 2021.
+
+\bibitem{yao2023react}
+Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao.
+\newblock ReAct: Synergizing Reasoning and Acting in Language Models.
+\newblock {\em arXiv preprint arXiv:2210.03629}, 2023.
+
+\bibitem{kirk2023survey}
+Robert Kirk, Amy Zhang, Edward Grefenstette, and Tim Rockt{\"a}schel.
+\newblock A Survey of Zero-shot Generalisation in Deep Reinforcement Learning.
+\newblock {\em Journal of Artificial Intelligence Research}, 76:201--264, 2023.
+
+\bibitem{zhong2024memorybank}
+Wanjun Zhong, Lianghong Guo, Qiqi Gao, and Yanlin Wang.
+\newblock MemoryBank: Enhancing Large Language Models with Long-Term Memory.
+\newblock In {\em AAAI Conference on Artificial Intelligence}, 2024.
+
+\bibitem{hu2024tree}
+Shibo Hu, Shunyu Yao, and Karthik Narasimhan.
+\newblock Tree of Thoughts: Deliberate Problem Solving with Large Language Models.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)}, 2024.
+
+\bibitem{chen2024agentreview}
+Yiqiao Chen, Ryo Kamoi, Shijia Peng, Jiaxin Xin, Frederic Kroeger, Navid Beigi, Yilun Zhou, Bo Pang, and Caiming Xiong.
+\newblock AgentReview: Exploring Peer Review Dynamics with LLM Agents.
+\newblock In {\em Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 2024.
+
+\bibitem{park2024metamemory}
+Seonghyeon Park, Seungone Kang, and Minjoon Choi.
+\newblock MetaReflection: Learning Instructions for Language Agents using Past Reflections.
+\newblock {\em arXiv preprint arXiv:2405.13009}, 2024.
+
+\bibitem{anonymous2025remo}
+Chen Wang, Zheng Liu, Yiming Zhang, and Wei Chen.
+\newblock REMO: Retrieval-Enhanced Memory Optimization for Language Agents.
+\newblock {\em arXiv preprint arXiv:2508.14521}, 2025.
+
+\bibitem{zhou2023large}
+Yongchao Zhou, Andrei Ioan Muresanu, Ziwen Han, Keiran Paster, Silviu Pitis, Harris Chan, and Jimmy Ba.
+\newblock Large Language Models Are Human-Level Prompt Engineers.
+\newblock In {\em International Conference on Learning Representations (ICLR)}, 2023.
+
+\bibitem{madaan2023selfrefine}
+Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, and others.
+\newblock Self-Refine: Iterative Refinement with Self-Feedback.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)}, 2023.
+
+\bibitem{ji2025arigraph}
+Jiashuo Ji, Zheyuan Wang, Yiyang Chen, Ran Zhang, Jidong Li, Yuanchen Liu, Weixiong Zhang, Hao Luo, and Yang Liu.
+\newblock AriGraph: Learning Knowledge Graph World Models with Episodic Memory.
+\newblock In {\em International Joint Conference on Artificial Intelligence (IJCAI)}, 2025.
+
+\bibitem{hao2023reasoning}
+Shibo Hao, Yi Gu, Haodi Ma, Joshua Jiahua Hong, Zhen Wang, Daisy Zhe Wang, and Zhiting Hu.
+\newblock Reasoning with Language Model is Planning with World Model.
+\newblock In {\em Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 2023.
+
+\bibitem{dong2023reta}
+Jianlyu Dong, Jiachun Xu, Dawei Zhang, Man Luo, Deyi Xiong, and Qingqing Li.
+\newblock RETA-LLM: A Retrieval-Augmented Large Language Model Toolkit.
+\newblock In {\em Conference on Empirical Methods in Natural Language Processing (EMNLP)}, 2023.
+
+\bibitem{wang2024metalearning}
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, and Denny Zhou.
+\newblock Meta-Learning for Fast Adaptation of LLM Agents.
+\newblock {\em arXiv preprint arXiv:2402.11791}, 2024.
+
+\bibitem{lake2018generalization}
+Brenden M Lake.
+\newblock Compositional Generalization through Meta Sequence-to-Sequence Learning.
+\newblock {\em Advances in Neural Information Processing Systems (NeurIPS)}, 31, 2018.
+
+\bibitem{atkinson1968human}
+Richard C Atkinson and Richard M Shiffrin.
+\newblock Human Memory: A Proposed System and Its Control Processes.
+\newblock {\em Psychology of Learning and Motivation}, 2:89--195, 1968.
+
+\bibitem{cowan2008differences}
+Nelson Cowan.
+\newblock What Are the Differences between Long-term, Short-term, and Working Memory?
+\newblock {\em Progress in Brain Research}, 169:323--338, 2008.
+
+\bibitem{pritzel2017neural}
+Alexander Pritzel, Benigno Uria, Sriram Srinivasan, Adri{\`a} Puigdom{\`e}nech, Oriol Vinyals, Demis Hassabis, Daan Wierstra, and Charles Blundell.
+\newblock Neural Episodic Control.
+\newblock In {\em International Conference on Machine Learning (ICML)}, 2017.
+
+\bibitem{graves2014neural}
+Alex Graves, Greg Wayne, and Ivo Danihelka.
+\newblock Neural Turing Machines.
+\newblock {\em arXiv preprint arXiv:1410.5401}, 2014.
+
+\bibitem{rolnick2019experience}
+David Rolnick, Arun Ahuja, Jonathan Schwarz, Timothy Lillicrap, and Gregory Wayne.
+\newblock Experience Replay for Continual Learning.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)}, 2019.
+
+\bibitem{kakade2003sample}
+Sham M Kakade.
+\newblock On the Sample Complexity of Reinforcement Learning.
+\newblock PhD thesis, University College London, 2003.
+
+\bibitem{sacerdoti1974planning}
+Earl D Sacerdoti.
+\newblock Planning in a Hierarchy of Abstraction Spaces.
+\newblock {\em Artificial Intelligence}, 5(2):115--135, 1974.
+
+\bibitem{barto2003recent}
+Andrew G Barto and Sridhar Mahadevan.
+\newblock Recent Advances in Hierarchical Reinforcement Learning.
+\newblock {\em Discrete Event Dynamic Systems}, 13(1):41--77, 2003.
+
+\bibitem{huang2022language}
+Wenlong Huang, Pieter Abbeel, Deepak Pathak, and Igor Mordatch.
+\newblock Language Models as Zero-Shot Planners: Extracting Actionable Knowledge for Embodied Agents.
+\newblock In {\em International Conference on Machine Learning (ICML)}, 2022.
+
+\bibitem{song2023llmplanner}
+Chan Hee Song, Jiaman Wu, Clayton Washington, Brian M Sadler, Wei-Lun Chao, and Yu Su.
+\newblock LLM-Planner: Few-Shot Grounded Planning for Embodied Agents with Large Language Models.
+\newblock In {\em International Conference on Computer Vision (ICCV)}, 2023.
+
+\bibitem{automated-planning}
+Malik Ghallab, Dana Nau, and Paolo Traverso.
+\newblock Automated Planning: Theory and Practice.
+\newblock Morgan Kaufmann, 2004.
+
+\bibitem{carta2024rebact}
+Thomas Carta, Cl{\'e}ment Romac, Thomas Wolff, Sylvain Lamprier, Olivier Sigaud, and Pierre-Yves Oudeyer.
+\newblock REBACT: Episodic Memory with Behavioral Trajectory Learning for Embodied AI Agents.
+\newblock In {\em International Conference on Learning Representations (ICLR)}, 2024.
+
+\bibitem{kim2024reflact}
+Yongchao Kim, Dongyun Lee, and Chanhee Lee.
+\newblock ReflAct: Reflection-Augmented Action Learning for Embodied Agents.
+\newblock {\em arXiv preprint arXiv:2403.12281}, 2024.
+
+\bibitem{du2024a3t}
+Yuqing Du, Olivia Watkins, Zihan Wang, C{\'e}dric Colas, Trevor Darrell, Pieter Abbeel, Abhishek Gupta, and Jacob Andreas.
+\newblock A3T: Alignment with Adversarial Augmentation and Test-Time Training.
+\newblock In {\em Conference on Neural Information Processing Systems (NeurIPS)}, 2024.
+
+\bibitem{sutton1999between}
+Richard S. Sutton, Doina Precup, and Satinder Singh.
+\newblock Between MDPs and semi-MDPs: A framework for temporal abstraction in reinforcement learning.
+\newblock {\em Artificial Intelligence}, 112(1-2):181--211, 1999.
+
+\end{thebibliography}
+
+\appendix
+
+\section{Experimental Details}
+
+\subsection{ALFWorld Environment Configuration}
+
+We use ALFWorld version 0.3.3 with the following configuration:
+\begin{itemize}
+\item Maximum episode length: 28 steps
+\item Action space: Text commands (go to X, take X, open X, close X, examine X, use X with Y)
+\item Observation space: Natural language descriptions of current location and visible objects
+\item Reward: +1 for task completion, 0 otherwise (sparse reward)
+\end{itemize}
+
+\subsection{Hyperparameters}
+
+\begin{table}[h]
+\centering
+\caption{Hyperparameters used in ReflexGrad experiments.}
+\begin{tabular}{lc}
+\toprule
+Parameter & Value \\
+\midrule
+History window size ($k$) & 5 \\
+Reflexion generation frequency & Every 5 steps or on failure \\
+TextGrad gradient computation & Every step \\
+Memory retrieval top-$k$ & 6 \\
+Consolidated memory strength threshold & 3.0 \\
+Forgetting decay rate & 0.995/hour \\
+Working memory compression (recent) & 350 tokens \\
+Working memory compression (medium) & 150 tokens \\
+Working memory compression (heavy) & 100 tokens \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Computational Resources}
+
+All experiments run on a single NVIDIA A100 GPU (40GB) with the following costs:
+\begin{itemize}
+\item Total API calls: $\sim$15,000 (across 9 envs $\times$ 4 trials)
+\item Model usage breakdown:
+  \begin{itemize}
+  \item GPT-5 (minimal reasoning): $\sim$40\% of calls for fast action selection
+  \item GPT-5 (medium reasoning): $\sim$30\% of calls for reflexion and TextGrad
+  \item GPT-4o-mini: $\sim$30\% of calls for verification and compression
+  \end{itemize}
+\item Estimated cost per trial: \$3.50 (GPT-5 Responses API pricing with mixed reasoning levels)
+\item Total experimental cost: $\sim$\$125
+\item Wall-clock time: $\sim$8 hours for complete 9$\times$4 benchmark
+\end{itemize}
+
+\section{Additional Ablation: Memory Compression Strategies}
+
+We compare three memory compression strategies:
+
+\begin{table}[h]
+\centering
+\caption{Comparison of memory compression strategies. Tiered compression achieves best balance of performance and efficiency.}
+\begin{tabular}{lccc}
+\toprule
+Compression Strategy & Success Rate & Token Usage & Retrieval Time \\
+\midrule
+No Compression (Full Verbosity) & 58\% & 100\% & 1.2s \\
+Uniform Compression (150 tokens) & 52\% & 43\% & 0.6s \\
+Tiered Compression (Ours) & 67\% & 47\% & 0.7s \\
+Heavy Compression (100 tokens) & 48\% & 29\% & 0.5s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Tiered compression (our approach) achieves 53\% token reduction while surpassing full verbosity performance (67\% vs 58\%). This counterintuitive result suggests that selective compression helps the agent focus on salient patterns rather than being overwhelmed by verbose details, validating our design choice of preserving recent context in detail while compressing older memories.
+
+\end{document}

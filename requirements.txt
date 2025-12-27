@@ -1,0 +1,28 @@
+# Core dependencies
+alfworld==0.3.3
+openai>=1.12.0
+pyyaml>=6.0
+numpy>=1.24.0
+
+# Environment dependencies (optional - only needed for specific environments)
+# gymnasium>=0.28.0  # Uncomment if using Gymnasium envs
+# textworld>=1.5.0   # Uncomment if using TextWorld
+# jericho>=3.1.0     # Uncomment if using Jericho
+# scienceworld>=1.1.3  # Uncomment if using ScienceWorld
+# minigrid>=2.0.0    # Uncomment if using MiniGrid
+# nle>=0.9.0         # Uncomment if using NetHack
+
+# Utilities
+python-dotenv>=1.0.0
+psutil>=5.9.0
+tqdm>=4.65.0
+jsonlines>=3.1.0
+
+# Optional: TextGrad (if using gradient optimization features)
+# textgrad>=0.1.4
+
+# Optional: vLLM (only if using local LLM inference)
+# vllm>=0.3.0
+
+# Optional: Advanced features
+# sentence-transformers>=2.2.0  # If using embedding-based retrieval
