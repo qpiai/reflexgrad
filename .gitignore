@@ -1,0 +1,70 @@
+# Backup files
+BACKUP_*
+*.backup
+*.backup_*
+*_backup_*
+
+# Compressed files
+*.tar.gz
+*.zip
+
+# Test and experiment directories
+ABLATION_*
+ACTION_DEBUG_*
+ALL_FIXES_*
+MEMORY_FIX_*
+TEST_*
+*_TEST_*
+
+# Analysis markdown files (too many)
+ANALYSIS_*.md
+ACE_*.md
+ACTUAL_*.md
+ADD_*.md
+ALFWORLD_*.md
+ALL_*.md
+ARCHITECTURE_*.md
+AUTOGEN_*.md
+AUTONOMOUS_*.md
+
+# Environment and secrets
+.env
+*.key
+*.secret
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs and output
+*.log
+world.log
+step_gradients.jsonl
+consolidated_memory.jsonl
+*.txt.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LaTeX auxiliary files
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.out
+*.toc
+*.lot
+*.lof
