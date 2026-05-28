@@ -6,7 +6,7 @@
 
 Official implementation of **"ReflexGrad: Within-Episode Failure Recovery in LLM Agents via Progress-Gated Dual-Process Routing"** by Ankush Kadu and Aswanth Krishnan (QpiAI).
 
-Accepted at the **ICML 2026 Workshop on the Future of Generative AI and Reasoning (FoGen)** and the **ICML 2026 Agents in the Wild (AIWILD) Workshop**.
+Accepted at the **ICML 2026 Workshop on the Foundations of Deep Generative Models (FoGen)** and the **ICML 2026 Workshop on Agents in the Wild: Safety, Security, and Beyond (AIWILD)**.
 
 **Paper:** [arXiv:2511.14584](https://arxiv.org/abs/2511.14584)
 
