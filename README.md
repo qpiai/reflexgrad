@@ -46,6 +46,14 @@ On **ALFWorld** (134 tasks, n=10 seeds, **no demonstrations**):
 
 *FAST process (TextGrad-style four-stage local optimization) and SLOW process (Reflexion-style four-stage causal reasoning), feeding the priority merge.*
 
+![Routing over time](routing_trace.png)
+
+*Routing over time: per-step evaluator score (top), router decision FAST/SLOW/COOL (middle), and the rolling window / cooldown counter (bottom). High stable scores → FAST; sustained low scores → SLOW; after a slow activation → COOL for c steps.*
+
+![Memory subsystem](memory_subsystem.png)
+
+*The within-episode memory subsystem: working memory, plan memory, gradient archive, failure memory, and environment knowledge, composed per step for the agent and the slow process. Memory is a supporting subsystem; the main contribution is the routing rule.*
+
 ## Installation
 
 ### Option 1 — Local setup
@@ -150,8 +158,10 @@ reflexgrad/
 ├── requirements.txt              # Dependencies
 ├── Dockerfile                    # Container definition
 ├── REPRODUCE.md                  # Detailed reproduction guide
-├── architecture.png              # Architecture diagram (Fig. 1)
-└── internals.png                 # Sub-stage internals (Fig. 2)
+├── architecture.png              # Bird's-eye architecture (Fig. 1)
+├── internals.png                 # Sub-stage internals (Fig. 2)
+├── routing_trace.png             # Routing over time (Fig. 3)
+└── memory_subsystem.png          # Memory subsystem (Fig. 4)
 ```
 
 ## Monitoring Results
