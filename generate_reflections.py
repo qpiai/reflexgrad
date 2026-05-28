@@ -2,12 +2,21 @@
 import os as _os
 if _os.getenv("MODEL_PROVIDER", "openai").lower() == "gemini":
     from shared_model_gemini import model
+elif _os.getenv("MODEL_PROVIDER", "openai").lower() == "openrouter":
+    from shared_model_openrouter import model
+elif _os.getenv("MODEL_PROVIDER", "openai").lower() == "vllm":
+    from shared_model_vllm import model
 else:
     from shared_model import model
 """Universal reflection generation with TextGrad integration"""
 
 from typing import List, Dict, Any, Tuple
-from vllm import LLM, SamplingParams
+# Conditional import - use vllm if available, otherwise use shared_model compatibility layer
+try:
+    from vllm import LLM, SamplingParams
+except ImportError:
+    from shared_model import SamplingParams
+    LLM = None
 import re
 import os
 import time
@@ -1043,7 +1052,7 @@ def _compress_memory_with_causal_patterns(
     task: str,
     success: bool,
     reflection: str = None
-) -> str:
+) -> dict:
     """
     Hybrid compression: LLM provides WHY, causal patterns provide structure.
     Replaces old _compress_memory_intelligently() with causal approach.
@@ -1067,7 +1076,13 @@ def _compress_memory_with_causal_patterns(
         )
     except ImportError:
         print("[WARNING] Causal compression unavailable, falling back to truncation")
-        return reflection[:500] if reflection else "No memory"
+        truncated = reflection[:500] if reflection else "No memory"
+        return {
+            'task': task,
+            'pattern': 'truncated_fallback',
+            'insight': truncated,
+            'success': success
+        }
 
     # Extract brief LLM WHY (semantic understanding)
     llm_why = _extract_llm_causal_why(trajectory, task, success)
@@ -1086,6 +1101,7 @@ def _compress_memory_with_causal_patterns(
         failed_attempts = []
         prev_obs = None
         action_history = []
+        compressed = None  # Initialize to handle empty trajectory case
 
         for action, obs, _ in trajectory:  # Trajectory always 3-tuple format
             action_history.append(action)
@@ -1123,9 +1139,15 @@ def _compress_memory_with_causal_patterns(
                 llm_causal_insight=llm_why
             )
 
-    # REMOVED FALLBACK: Always return a dict, never None
+    # Handle empty trajectory or compression failure gracefully
     if not compressed:
-        raise ValueError(f"Compression failed for task '{task}' with success={success}. This should never happen - check compression logic!")
+        # Provide a minimal fallback for empty trajectory cases
+        compressed = {
+            'task': task,
+            'pattern': 'empty_trajectory',
+            'insight': f"No actions were taken for task: {task}. Consider starting with basic exploration actions.",
+            'success': success
+        }
 
     return compressed
 

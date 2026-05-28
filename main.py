@@ -8,10 +8,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Set seeds for reproducibility
+# Seed is overridable via REFLEXGRAD_SEED env var (set from --seed flag, see below)
+# so the n=10 statistical protocol can run multiple seeds without code changes.
 import random
 import numpy as np
-random.seed(42)
-np.random.seed(42)
+_seed = int(os.environ.get('REFLEXGRAD_SEED', '42'))
+random.seed(_seed)
+np.random.seed(_seed)
 
 # Configure ALFWorld to use official benchmark (134 evaluation tasks)
 # This ensures publication-level research with standardized evaluation
@@ -19,7 +22,7 @@ os.environ['ALFWORLD_DATA'] = os.path.expanduser('~/.cache/alfworld')
 
 # Parse args early to determine model provider
 parser_early = argparse.ArgumentParser(add_help=False)
-parser_early.add_argument("--model_provider", type=str, default="openai", choices=["openai", "gemini"])
+parser_early.add_argument("--model_provider", type=str, default="openai", choices=["openai", "gemini", "openrouter", "vllm"])
 args_early, _ = parser_early.parse_known_args()
 
 # Set environment variable for model provider (so shared_model files can detect it)
@@ -41,9 +44,16 @@ elif args_early.model_provider == "gemini":
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set in .env file. Please add: GEMINI_API_KEY=your_key_here")
     print(f'Gemini API Key loaded: {api_key[:20]}...')
+elif args_early.model_provider == "openrouter":
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not set in .env file. Please add: OPENROUTER_API_KEY=your_key_here")
+    print(f'OpenRouter API Key loaded: {api_key[:20]}...')
+elif args_early.model_provider == "vllm":
+    print(f'vLLM local model provider selected')
 
-from alfworld_trial import run_trial
-from alfworld_trial import prompt_generator
+from reflexgrad_trial import run_trial
+from reflexgrad_trial import prompt_generator
 from generate_reflections import update_memory
 from typing import Any, List, Dict , Tuple
 
@@ -71,9 +81,26 @@ def get_args():
     parser.add_argument("--env_type", type=str, default="alfworld",
                         choices=["alfworld", "textworld_cooking", "textworld_treasure", "textworld_simple",
                                 "jericho_zork1", "jericho_detective", "jericho_balances",
-                                "scienceworld_boil", "scienceworld_melt", "scienceworld_grow",
-                                "babyai_goto", "babyai_pickup", "babyai_unlock"],
+                                "scienceworld_boil", "scienceworld_melt", "scienceworld_grow", "scienceworld_all",
+                                "babyai_goto", "babyai_pickup", "babyai_unlock",
+                                "appworld", "osworld",
+                                "openrca", "openrca_Bank", "openrca_Telecom",
+                                "openrca_Market_cloudbed-1", "openrca_Market_cloudbed-2",
+                                "openrca_code", "openrca_code_Bank", "openrca_code_Telecom",
+                                "openrca_code_Market_cloudbed-1", "openrca_code_Market_cloudbed-2"],
                         help="Environment type to use")
+
+    # OSWorld-specific arguments
+    parser.add_argument("--osworld_task_id", type=str, default=None,
+                        help="OSWorld task ID (e.g., 'office_libreoffice_calc_1')")
+    parser.add_argument("--osworld_vm_ip", type=str, default="localhost",
+                        help="IP address of the OSWorld VM")
+    parser.add_argument("--osworld_vm_port", type=int, default=5000,
+                        help="HTTP API port for the OSWorld VM (default: 5000)")
+    parser.add_argument("--max_steps", type=int, default=50,
+                        help="Maximum steps per episode (default: 50 for OSWorld, 55 for ALFWorld)")
+    parser.add_argument("--osworld_headless", action='store_true',
+                        help="Run OSWorld in headless mode (no VNC display)")
     parser.add_argument("--parallel", action='store_true', help="Enable parallel execution for A100")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for parallel execution")
     parser.add_argument("--env_configs_file", type=str, help="Path to environment configs JSON file", default="")
@@ -83,15 +110,57 @@ def get_args():
     parser.add_argument("--perfect_threshold", type=float, default=0.98,
                         help="Accuracy threshold for 'perfect' performance (default: 0.98)")
 
+    # Vision backend for visual environments (OSWorld, etc.).
+    # Default to REFLEXGRAD_MODEL env var so VGL uses the SAME model as the actor —
+    # cross-model contamination (e.g. gpt-4o for VGL + gemma-4 for actor) was proven
+    # to be the dominant non-determinism source in Phase-7-v2 monitoring (writer_run1
+    # vs writer_run2 diverged at the very first actor.generate prompt because VGL
+    # scene descriptions differ across GPT-4o calls).
+    # Pass any model name — vision_backend.py's universal fallback routes it through
+    # OPENAI_BASE_URL so local vLLM (Gemma-4) works transparently.
+    _default_vb = os.getenv("REFLEXGRAD_MODEL", "gemma4")
+    parser.add_argument("--vision_backend", type=str, default=_default_vb,
+                        help="Vision backend for screenshot perception. Defaults to "
+                             "$REFLEXGRAD_MODEL (currently '%s') so VGL uses the same "
+                             "model as the actor — any cross-model setup is cross-"
+                             "contamination and causes non-determinism. Known specialised "
+                             "names: gpt-5, gpt-5.2, gpt-4o, qwen3-vl-8b, claude. Any "
+                             "other name is wrapped as an OpenAI-compatible backend "
+                             "(works for gemma4, qwen2.5-vl, llava, opencua, etc.)."
+                             % _default_vb)
+
     # Model provider selection
     parser.add_argument("--model_provider", type=str, default="openai",
-                        choices=["openai", "gemini"],
-                        help="Model provider to use: 'openai' (default) or 'gemini'")
+                        choices=["openai", "gemini", "openrouter", "vllm"],
+                        help="Model provider to use: 'openai' (default), 'gemini', or 'openrouter'")
 
     # Ablation study mode
     parser.add_argument("--ablation_mode", type=str, default='combined',
-                        choices=['textgrad_only', 'reflexion_only', 'combined'],
-                        help="Ablation study mode: textgrad_only, reflexion_only, or combined (default: combined)")
+                        choices=['textgrad_only', 'reflexion_only', 'combined', 'none'],
+                        help="Ablation study mode: textgrad_only, reflexion_only, combined (default), or none (zero-shot baseline)")
+
+    # Router rule ablation (T1.1 — NeurIPS 2027 paper)
+    # Compares the progress-gated routing rule (paper default) against
+    # random and fixed-cadence baselines on the same 134-task ALFWorld grid.
+    parser.add_argument("--router_mode", type=str, default='progress_gated',
+                        choices=['progress_gated', 'random', 'fixed_cadence'],
+                        help="Router rule for FAST/SLOW mode selection. "
+                             "'progress_gated' (default): paper's Eq. 3 rule. "
+                             "'random': uniform sample over {textgrad, reflexion} per call. "
+                             "'fixed_cadence': reflexion every k=10 steps regardless of score.")
+
+    # Seed for statistical protocol (paper uses n=10 seeds for Welch's t-tests).
+    # Default 42 reproduces the existing single-seed behavior; pass a different
+    # value per run to span the seed list {42, 123, 456, 789, 1024, 1337, 2025,
+    # 3141, 5926, 7531}.
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for this run. Sets REFLEXGRAD_SEED.")
+
+    # Pure ablation mode - for ICML paper
+    parser.add_argument("--pure_ablation", action='store_true',
+                        help="Pure ablation: no TODO, no pre-learned patterns, fresh start (only for textgrad_only/reflexion_only)")
+    parser.add_argument("--no_todo", action='store_true',
+                        help="Disable TODO Manager completely")
 
     # Debug flags
     parser.add_argument("--debug", action='store_true', help="Enable all debug outputs")
@@ -105,52 +174,191 @@ def get_args():
     assert args.num_trials > 0, "Number of trials should be positive"
     assert args.num_envs > 0, "Number of environments should be positive"
 
+    # Re-seed RNGs from --seed (the module-load seeding happened before argparse).
+    # This is the authoritative seed source for the run.
+    os.environ['REFLEXGRAD_SEED'] = str(args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    print(f"[SEED] Run seeded with {args.seed}")
+
     return args
 
 def set_debug_flags(args):
     """Set debug flags based on command line arguments"""
-    import alfworld_trial
+    import reflexgrad_trial
     
 
     # Force ensure the flags are actually set in the modules
     print(f"\n[DEBUG] Verifying debug flags are set:")
-    print(f"  alfworld_trial.DEBUG_ACTOR = {alfworld_trial.DEBUG_ACTOR}")
-    print(f"  alfworld_trial.DEBUG_CRITIC = {alfworld_trial.DEBUG_CRITIC}")
-    print(f"  alfworld_trial.DEBUG_REFLEXION = {alfworld_trial.DEBUG_REFLEXION}")
+    print(f"  reflexgrad_trial.DEBUG_ACTOR = {reflexgrad_trial.DEBUG_ACTOR}")
+    print(f"  reflexgrad_trial.DEBUG_CRITIC = {reflexgrad_trial.DEBUG_CRITIC}")
+    print(f"  reflexgrad_trial.DEBUG_REFLEXION = {reflexgrad_trial.DEBUG_REFLEXION}")
     
     # Also set in dynamic_prompting module
     from dynamic_prompting import set_debug_flags as dp_set_debug
-    dp_set_debug(alfworld_trial.DEBUG_ACTOR, alfworld_trial.DEBUG_CRITIC)
+    dp_set_debug(reflexgrad_trial.DEBUG_ACTOR, reflexgrad_trial.DEBUG_CRITIC)
 
     if args.no_debug:
         # Disable all debug
-        alfworld_trial.DEBUG_ACTOR = False
-        alfworld_trial.DEBUG_CRITIC = False
-        alfworld_trial.DEBUG_REFLEXION = False
+        reflexgrad_trial.DEBUG_ACTOR = False
+        reflexgrad_trial.DEBUG_CRITIC = False
+        reflexgrad_trial.DEBUG_REFLEXION = False
     elif args.debug:
         # Enable all debug
-        alfworld_trial.DEBUG_ACTOR = True
-        alfworld_trial.DEBUG_CRITIC = True
-        alfworld_trial.DEBUG_REFLEXION = True
+        reflexgrad_trial.DEBUG_ACTOR = True
+        reflexgrad_trial.DEBUG_CRITIC = True
+        reflexgrad_trial.DEBUG_REFLEXION = True
     else:
         # Set individual flags
         if args.debug_actor:
-            alfworld_trial.DEBUG_ACTOR = True
+            reflexgrad_trial.DEBUG_ACTOR = True
         if args.debug_critic:
-            alfworld_trial.DEBUG_CRITIC = True
+            reflexgrad_trial.DEBUG_CRITIC = True
         if args.debug_reflexion:
-            alfworld_trial.DEBUG_REFLEXION = True
+            reflexgrad_trial.DEBUG_REFLEXION = True
         
         # DEFAULT: If use_memory is True, enable reflexion debugging
         if args.use_memory and not args.no_debug:
-            alfworld_trial.DEBUG_REFLEXION = True
-            alfworld_trial.DEBUG_CRITIC = True  # For step reflections
+            reflexgrad_trial.DEBUG_REFLEXION = True
+            reflexgrad_trial.DEBUG_CRITIC = True  # For step reflections
     
     print(f"\nDebug Settings:")
-    print(f"  Actor Debug: {alfworld_trial.DEBUG_ACTOR}")
-    print(f"  Critic Debug: {alfworld_trial.DEBUG_CRITIC}")
-    print(f"  Reflexion Debug: {alfworld_trial.DEBUG_REFLEXION}")
+    print(f"  Actor Debug: {reflexgrad_trial.DEBUG_ACTOR}")
+    print(f"  Critic Debug: {reflexgrad_trial.DEBUG_CRITIC}")
+    print(f"  Reflexion Debug: {reflexgrad_trial.DEBUG_REFLEXION}")
     print()
+
+
+def meta_analysis_after_trial0(env_configs, world_log_path):
+    """
+    Meta-learning phase after Trial 0.
+
+    For successful envs: Analyze trajectory, find optimal sequence, mark for direct replay.
+    For failed envs: Prepare context with partial progress and insights from successful ones.
+
+    This is a UNIVERSAL algorithm - no hardcoding, works with any task domain.
+    """
+    print(f"\n{'='*80}")
+    print("META-ANALYSIS PHASE: Analyzing Trial 0 results for optimal Trial 1 strategy")
+    print(f"{'='*80}\n")
+
+    successful_envs = []
+    failed_envs = []
+
+    # Separate envs by success/failure (use enumerate to track env_id)
+    for env_id, env in enumerate(env_configs):
+        env['env_id'] = env_id  # Ensure env_id is set
+        if env.get('is_success', False):
+            successful_envs.append((env_id, env))
+        else:
+            failed_envs.append((env_id, env))
+
+    print(f"Trial 0 Results: {len(successful_envs)} successful, {len(failed_envs)} failed\n")
+
+    # Phase 1: Analyze successful envs - extract optimal sequences
+    print("=" * 60)
+    print("PHASE 1: Extracting optimal sequences from successful envs")
+    print("=" * 60)
+
+    for env_id, env in successful_envs:
+
+        # Get the success_workflow from memory
+        success_workflow = None
+        for mem in env.get('memory', []):
+            if isinstance(mem, dict) and mem.get('type') == 'success_workflow':
+                success_workflow = mem
+                break
+
+        if success_workflow:
+            actions = success_workflow.get('actions', [])
+            task = success_workflow.get('task', '')
+
+            # Use LLM to analyze and find optimal sequence
+            # This is universal - LLM reasons about what actions were necessary
+            optimal_sequence = analyze_for_optimal_sequence(task, actions)
+
+            if optimal_sequence:
+                env['optimal_sequence'] = optimal_sequence
+                env['use_direct_replay'] = True
+                print(f"  ENV {env_id}: Optimal sequence found ({len(optimal_sequence)} steps vs {len(actions)} original)")
+            else:
+                # Keep original sequence if optimization fails
+                env['optimal_sequence'] = actions
+                env['use_direct_replay'] = True
+                print(f"  ENV {env_id}: Using original sequence ({len(actions)} steps)")
+        else:
+            print(f"  ENV {env_id}: No success_workflow found, will use normal learning")
+
+    # Phase 2: Prepare failed envs with accumulated insights
+    print("\n" + "=" * 60)
+    print("PHASE 2: Preparing failed envs with accumulated knowledge")
+    print("=" * 60)
+
+    # Collect insights from ALL successful envs
+    all_successful_insights = []
+    for env_id, env in successful_envs:
+        for mem in env.get('memory', []):
+            if isinstance(mem, dict):
+                # Collect reflexions and step reflections
+                if mem.get('type') in ['reflexion', 'step_reflection']:
+                    all_successful_insights.append({
+                        'task_type': env.get('task_type', 'unknown'),
+                        'content': mem.get('content', '') or mem.get('reflection', ''),
+                        'from_success': True
+                    })
+
+    for env_id, env in failed_envs:
+        # Mark for enhanced learning (same algo but with extra context)
+        env['use_direct_replay'] = False
+
+        # Add insights from successful envs as additional context
+        env['cross_env_insights'] = all_successful_insights
+
+        # Get partial progress - what locations were already explored
+        explored_locations = set()
+        for mem in env.get('memory', []):
+            if isinstance(mem, dict) and mem.get('type') == 'step_reflection':
+                # Extract explored locations from step reflections
+                content = mem.get('content', '')
+                # Let the agent know what was already tried
+                explored_locations.add(content)
+
+        env['explored_context'] = list(explored_locations)
+
+        print(f"  ENV {env_id}: Prepared with {len(all_successful_insights)} cross-env insights, {len(explored_locations)} explored contexts")
+
+    # Log the meta-analysis
+    with open(world_log_path, 'a') as wf:
+        wf.write(f"\n\n***** META-ANALYSIS AFTER TRIAL 0 *****\n")
+        wf.write(f"Successful envs: {[eid for eid, e in successful_envs]}\n")
+        wf.write(f"Failed envs: {[eid for eid, e in failed_envs]}\n")
+        wf.write(f"Envs with direct replay: {[e.get('env_id') for e in env_configs if e.get('use_direct_replay')]}\n")
+        wf.write("*****\n\n")
+
+    print(f"\nMeta-analysis complete. {len([e for e in env_configs if e.get('use_direct_replay')])} envs will use direct replay.\n")
+
+    return env_configs
+
+
+def analyze_for_optimal_sequence(task: str, actions: list) -> list:
+    """
+    Analyze action sequence and find the optimal (minimal) sequence.
+    For now, returns the original actions (optimization can be added later).
+
+    This is UNIVERSAL - works with any task type.
+    """
+    if not actions:
+        return None
+
+    # For now, just return the original actions
+    # Future: Use LLM to optimize by removing redundant exploration steps
+    return actions
+
+# Placeholder for future LLM-based optimization
+def _analyze_for_optimal_sequence_with_llm(task: str, actions: list) -> list:
+    """Future: Use LLM to optimize action sequence."""
+    # This can be implemented later when we have the right model interface
+    pass
 
 def check_gpu_and_optimize():
     """Check GPU and suggest optimizations"""
@@ -221,6 +429,19 @@ def check_early_stopping(accuracies: List[float], perfect_threshold: float,
     return False, ""
 
 def main(args) -> None:
+    # OSWorld: set env vars from CLI args so get_environment() can pick them up
+    if args.env_type == "osworld":
+        os.environ["OSWORLD_VM_IP"] = args.osworld_vm_ip
+        os.environ["OSWORLD_VM_PORT"] = str(args.osworld_vm_port)
+        os.environ["OSWORLD_MAX_STEPS"] = str(args.max_steps)
+        os.environ["OSWORLD_HEADLESS"] = "true" if args.osworld_headless else "false"
+        os.environ["OSWORLD_VISION_BACKEND"] = args.vision_backend
+        if args.osworld_task_id:
+            os.environ["OSWORLD_TASK_ID"] = args.osworld_task_id
+        print(f"\n[OSWorld] Running through ReflexGrad pipeline (vision_backend={args.vision_backend})")
+        print(f"[OSWorld] VM: {args.osworld_vm_ip}:{args.osworld_vm_port}, max_steps={args.max_steps}")
+        print(f"[OSWorld] Legacy CUA agent still available via: python run_osworld_cua.py\n")
+
     # CRITICAL: Clear contaminated state from previous runs
     if not args.is_resume:  # Only for fresh runs
         import glob
@@ -321,7 +542,7 @@ def main(args) -> None:
         # Load universal memory
         universal_memory_path = os.path.join(args.resume_dir, 'universal_memory/universal_memory.pkl')
         if os.path.exists(universal_memory_path):
-            from alfworld_trial import universal_memory
+            from reflexgrad_trial import universal_memory
             universal_memory.load_memory()
             print(f"[RESUME] Loaded universal memory with {len(universal_memory.state_action_outcomes)} states")
         else:
@@ -538,9 +759,16 @@ def main(args) -> None:
             open(trial_env_configs_log_path, 'w').close()
 
         # run trial with environment type
+        # Propagate router_mode + seed via env var so ReflexGradCore and
+        # downstream RNGs pick them up without threading args through every call site.
+        os.environ['REFLEXGRAD_ROUTER_MODE'] = getattr(args, 'router_mode', 'progress_gated')
+        os.environ['REFLEXGRAD_SEED'] = str(getattr(args, 'seed', 42))
+        os.environ['REFLEXGRAD_ROUTER_SEED'] = str(getattr(args, 'seed', 42))
         run_trial(trial_log_path, world_log_path, trial_idx, env_configs,
                   args.use_memory, args.skip_discovery, args.env_type, args.batch_size,
-                  ablation_mode=args.ablation_mode)
+                  ablation_mode=args.ablation_mode,
+                  pure_ablation=getattr(args, 'pure_ablation', False),
+                  no_todo=getattr(args, 'no_todo', False))
         print(f"RUN_TRIAL COMPLETED for trial {trial_idx}", flush=True)
 
         # PROFILING: Memory checkpoint AFTER trial
@@ -582,7 +810,7 @@ def main(args) -> None:
             
             # Pass the already-imported objects
             import generate_reflections
-            from alfworld_trial import prompt_generator, env_understanding
+            from reflexgrad_trial import prompt_generator, env_understanding
             generate_reflections.prompt_generator = prompt_generator
             generate_reflections.env_understanding = env_understanding
             generate_reflections.DEBUG_REFLEXION = True
@@ -687,15 +915,21 @@ def main(args) -> None:
             print(f"  Successes: {stats['success_count']}/{stats['num_envs']}")
             print(f"  Progress summary updated: {logging_dir}/progress_summary.json\n")
 
-        # Reset environments for next trial AFTER memory update
+        # META-LEARNING: After Trial 0 completes, run analysis phase BEFORE reset
+        # This must happen while is_success is still set correctly
+        if trial_idx == 0:
+            print("\n[META-LEARNING] Running analysis after Trial 0...")
+            env_configs = meta_analysis_after_trial0(env_configs, world_log_path)
+
+        # Reset environments for next trial AFTER memory update and meta-analysis
         if trial_idx < args.num_trials:
             for env_config in env_configs:
                 env_config['is_success'] = False
-            
+
             reset_msg = f"[RESET] All environments reset for trial {trial_idx + 1}"
             print(reset_msg)
             with open(world_log_path, 'a') as wf:
-                wf.write(reset_msg + '\n')            
+                wf.write(reset_msg + '\n')
 
 
         # Check if all environments succeeded
@@ -715,7 +949,7 @@ def main(args) -> None:
             wf.write(f'\n\n***** End Trial #{trial_idx} *****\n\n')
 
         trial_idx += 1
-        
+
         # Check for early stopping if adaptive mode is enabled
         if args.adaptive and trial_idx >= args.perfect_trials:
             should_stop, reason = check_early_stopping(
@@ -802,15 +1036,15 @@ if __name__ == '__main__':
     args = get_args()
     # Force debug flags when using memory
     if args.use_memory:
-        import alfworld_trial
+        import reflexgrad_trial
         import dynamic_prompting
-        alfworld_trial.DEBUG_REFLEXION = True
-        alfworld_trial.DEBUG_CRITIC = True
-        alfworld_trial.DEBUG_ACTOR = True
+        reflexgrad_trial.DEBUG_REFLEXION = True
+        reflexgrad_trial.DEBUG_CRITIC = True
+        reflexgrad_trial.DEBUG_ACTOR = True
         dynamic_prompting.DEBUG_CRITIC = True
         dynamic_prompting.DEBUG_ACTOR = True
         print(f"\n[LOGGING] Debug flags enabled for memory mode")
-        print(f"  REFLEXION: {alfworld_trial.DEBUG_REFLEXION}")
-        print(f"  CRITIC: {alfworld_trial.DEBUG_CRITIC}")
-        print(f"  ACTOR: {alfworld_trial.DEBUG_ACTOR}\n")
+        print(f"  REFLEXION: {reflexgrad_trial.DEBUG_REFLEXION}")
+        print(f"  CRITIC: {reflexgrad_trial.DEBUG_CRITIC}")
+        print(f"  ACTOR: {reflexgrad_trial.DEBUG_ACTOR}\n")
     main(args)

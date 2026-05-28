@@ -116,6 +116,28 @@ SUCCESSFUL APPROACHES FROM SIMILAR TASKS:
 5. Final subgoal completes the entire task
 6. Use ONLY objects/concepts mentioned in the task above
 
+ENVIRONMENT CONTEXT (for GUI/computer tasks):
+- If this is a computer/GUI task, decompose into high-level interaction steps
+- Each TODO should describe WHAT to accomplish, not HOW (no pixel coordinates)
+- Include verification steps: after each major action, verify it worked
+- Consider both GUI actions and programmatic shortcuts (e.g., terminal commands)
+- Plan for common failure modes: wrong window focused, dialog blocking, etc.
+
+CRITICAL — RESPECT CURRENT STATE:
+The CURRENT STATE above already reflects everything setup has done (files opened,
+windows navigated, commands run). Do NOT generate subtasks for things already
+visible as done. Examples:
+- If the target file is listed as already opened in CURRENT STATE → SKIP "open the file"
+- If the active slide/sheet/page is already at the target → SKIP "navigate to it"
+- If a window is already focused → SKIP "click to focus"
+Start your decomposition from the CURRENT STATE, not from a blank desktop.
+
+PROACTIVE REPLANNING:
+After each TODO completion, reassess remaining TODOs based on:
+- What actually happened (state may differ from expectation)
+- New information discovered (e.g., file was in different location)
+- Shortcuts available (e.g., keyboard shortcut instead of menu navigation)
+
 Format: Start each line with "TODO: " followed by the high-level goal
 
 Generate 3-8 subgoals:"""
@@ -139,15 +161,46 @@ Requirements:
 5. Final subgoal completes the entire task
 6. Use ONLY objects/concepts mentioned in the task above
 
+ENVIRONMENT CONTEXT (for GUI/computer tasks):
+- If this is a computer/GUI task, decompose into high-level interaction steps
+- Each TODO should describe WHAT to accomplish, not HOW (no pixel coordinates)
+- Include verification steps: after each major action, verify it worked
+- Consider both GUI actions and programmatic shortcuts (e.g., terminal commands)
+- Plan for common failure modes: wrong window focused, dialog blocking, etc.
+
+CRITICAL — RESPECT CURRENT STATE:
+The CURRENT STATE above already reflects everything setup has done (files opened,
+windows navigated, commands run). Do NOT generate subtasks for things already
+visible as done. Examples:
+- If the target file is listed as already opened in CURRENT STATE → SKIP "open the file"
+- If the active slide/sheet/page is already at the target → SKIP "navigate to it"
+- If a window is already focused → SKIP "click to focus"
+Start your decomposition from the CURRENT STATE, not from a blank desktop.
+
+PROACTIVE REPLANNING:
+After each TODO completion, reassess remaining TODOs based on:
+- What actually happened (state may differ from expectation)
+- New information discovered (e.g., file was in different location)
+- Shortcuts available (e.g., keyboard shortcut instead of menu navigation)
+
 Format: Start each line with "TODO: " followed by the high-level goal
 
 Generate 3-8 subgoals:"""
 
         # Call LLM with retry logic for truncated responses
-        from vllm import SamplingParams
+        try:
+            from vllm import SamplingParams
+        except ImportError:
+            from shared_model import SamplingParams
 
         max_retries = 3
-        base_tokens = 7000  # Increased to 7000 tokens for GPT-5 reasoning='high' mode (prevents empty responses)
+        # Adaptive token budget: use high budget for large-context models,
+        # lower for local models with limited context
+        import os
+        _model = os.getenv("REFLEXGRAD_MODEL", "gpt-5")
+        # Adaptive: use lower budget for local/open models (limited context)
+        _is_local = any(x in _model.lower() for x in ["gemma", "qwen", "llama", "local", "/model", "opencua", "intern", "phi"])
+        base_tokens = 3000 if _is_local else 16000
 
         for attempt in range(max_retries):
             # Increase tokens on retry (in case output was truncated)
@@ -281,6 +334,14 @@ Generate 3-8 subgoals:"""
 
                 # Move to next TODO
                 self._advance_to_next_todo()
+            elif current_todo.attempts >= 4:
+                # Mark as FAILED — do NOT pretend it was completed
+                # The agent should know this subtask was NOT done so downstream subtasks
+                # can account for it (e.g., "select paragraphs" failed → can't apply spacing)
+                print(f"[TODO FAILED] ❌ TODO failed after {current_todo.attempts} attempts: {current_todo.content}")
+                current_todo.status = TodoStatus.FAILED
+                current_todo.failure_reasons.append(f"Failed after {current_todo.attempts} attempts")
+                self._advance_to_next_todo()
             elif progress_status == 'NO_PROGRESS' and current_todo.attempts >= 3:
                 # Stuck on this TODO - mark as struggling
                 current_todo.failure_reasons.append(f"No progress after {current_todo.attempts} attempts")
@@ -361,7 +422,10 @@ Question: Based on the state change from PREVIOUS to CURRENT, is the SUBGOAL now
 
 Answer ONLY with: YES or NO"""
 
-        from vllm import SamplingParams
+        try:
+            from vllm import SamplingParams
+        except ImportError:
+            from shared_model import SamplingParams
         # Use fast model for verification (simple YES/NO, no reasoning needed)
         sampling_params = SamplingParams(max_tokens=10, temperature=0.0)
 
@@ -415,8 +479,13 @@ LLM PROCESSED RESPONSE:
                 TodoStatus.PENDING: "⏳",
                 TodoStatus.IN_PROGRESS: "🔧",
                 TodoStatus.COMPLETED: "✅",
-                TodoStatus.FAILED: "❌"
-            }[todo.status]
+                TodoStatus.FAILED: "❌",
+                # FIX: Open-source models may set status as string instead of enum
+                "pending": "⏳",
+                "in_progress": "🔧",
+                "completed": "✅",
+                "failed": "❌",
+            }.get(todo.status, "⏳")
 
             output += f"{i}. {status_icon} {todo.content}"
 

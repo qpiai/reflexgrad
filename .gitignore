@@ -68,3 +68,9 @@ Thumbs.db
 *.toc
 *.lot
 *.lof
+# Runtime-generated artifacts
+discovered_environments/
+*.pkl
+prompt_generator_state*
+environment_knowledge*
+.reflexgrad_live/

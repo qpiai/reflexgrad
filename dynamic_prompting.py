@@ -6,9 +6,16 @@ from collections import defaultdict, Counter
 import os as _os
 if _os.getenv("MODEL_PROVIDER", "openai").lower() == "gemini":
     from shared_model_gemini import model
+elif _os.getenv("MODEL_PROVIDER", "openai").lower() == "openrouter":
+    from shared_model_openrouter import model
+elif _os.getenv("MODEL_PROVIDER", "openai").lower() == "vllm":
+    from shared_model_vllm import model
 else:
     from shared_model import model
-from vllm import SamplingParams
+try:
+    from vllm import SamplingParams
+except ImportError:
+    from shared_model import SamplingParams
 import re
 import json
 import sys
@@ -679,10 +686,15 @@ CRITICAL: Only output actions that appear in the Valid Actions list. Do not para
 Output:"""
 
                         # Use existing fast_model (already configured as gpt-4o-mini or gemini-1.5-flash)
-                        from vllm import SamplingParams
+                        try:
+                            from vllm import SamplingParams
+                        except ImportError:
+                            from shared_model import SamplingParams
                         # Dynamic model loading
                         if _os.getenv("MODEL_PROVIDER", "openai").lower() == "gemini":
                             from shared_model_gemini import fast_model
+                        elif _os.getenv("MODEL_PROVIDER", "openai").lower() == "openrouter":
+                            from shared_model_openrouter import fast_model
                         else:
                             from shared_model import fast_model
 

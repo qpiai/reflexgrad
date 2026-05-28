@@ -1,272 +1,195 @@
-# ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization
+# ReflexGrad: Within-Episode Failure Recovery in LLM Agents via Progress-Gated Dual-Process Routing
 
 [![arXiv](https://img.shields.io/badge/arXiv-2511.14584-b31b1b.svg)](https://arxiv.org/abs/2511.14584)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Workshop](https://img.shields.io/badge/ICML%202026-FoGen%20Workshop-blue.svg)](https://arxiv.org/abs/2511.14584)
 
-Official implementation of the paper **"ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization in LLM Agents"** by Ankush Kadu and Ashwanth Krishnan (QpiAI, 2025).
+Official implementation of **"ReflexGrad: Within-Episode Failure Recovery in LLM Agents via Progress-Gated Dual-Process Routing"** by Ankush Kadu and Aswanth Krishnan (QpiAI).
 
-**Paper:** [arXiv:2511.14584](https://arxiv.org/abs/2511.14584) | **DOI:** [10.48550/arXiv.2511.14584](https://doi.org/10.48550/arXiv.2511.14584)
+Accepted at the **ICML 2026 Workshop on Failure Modes in Agentic AI (FoGen)**.
 
-##  Key Results
+**Paper:** [arXiv:2511.14584](https://arxiv.org/abs/2511.14584)
 
-- **67% zero-shot success rate** on ALFWorld (Trial 0, first exposure, no demonstrations)
-- **78% success rate** on Trial 1 (cross-trial learning improvement)
-- **Zero action loops** through TODO-guided exploration  
-- **100% component alignment** (TODO-TextGrad-Reflexion synergy)
-- Competitive with few-shot baselines: Reflexion (91%, 6-shot), REBACT (93%), ReflAct (93%)
+---
 
-##  Architecture Overview
+## Overview
 
-ReflexGrad integrates three complementary mechanisms in a tightly-coupled synergistic system:
+LLM agents fail on tasks they could solve: the agent commits to a wrong approach early, environment feedback is uninformative, minor variations repeat, and the step budget runs out. The information needed to escape already exists in the post-failure trajectory — but existing methods either delay recovery to the next trial (Reflexion) or refine the wrong strategy locally (TextGrad).
 
-1. **LLM-Based Hierarchical TODO Decomposition**: Strategic planning via pure LLM reasoning (no hardcoded rules)
-2. **History-Aware Causal Reflexion**: Analyzes recent action-observation history every 5 steps to identify failure patterns
-3. **TextGrad-Based Optimization**: Gradient-based policy updates every 3 steps via LLM-based semantic merge
+**ReflexGrad** closes this gap with a dual-process architecture that escalates from tactical to strategic correction *within a single episode, without demonstrations*:
 
-![ReflexGrad Architecture](flowchart.png)
+- **Fast process** — per-step textual refinement every `k=3` steps (TextGrad-style), catching errors a single gradient can fix.
+- **Slow process** — stall-triggered causal replanning when `m=5` consecutive low-progress scores fire the routing gate (Reflexion-style).
+- **Progress-gated router** — a deterministic rule over a rolling window of evaluator scores selects exactly one process per step.
+- **Priority merge** — `plan ≻ gradient ≻ base policy`, keeping the natural-language policy coherent without averaging contradictory updates.
+- **Cooldown** — protects plan execution from premature gradient interference.
 
-*Figure: ReflexGrad Dual-Loop Self-Evolution Mechanism showing the three-way synergistic coupling between TODO decomposition, TextGrad optimization (Loop 1, every 3 steps), and Reflexion generation (Loop 2, every 5 steps). The central episodic memory system provides context to all components.*
+## Key Results
 
-### Dual-Loop Mechanism
+On **ALFWorld** (134 tasks, n=10 seeds, **no demonstrations**):
 
-- **Loop 1 (Policy Optimization)**: Every 3 steps, accumulated gradients are synthesized to update the policy via LLM-based semantic merge
-- **Loop 2 (Reflexion Generation)**: Every 5 steps or on failure, causal insights are generated from recent action-observation history and stored in working reflexion buffer
+| Model | Zero-shot | ReflexGrad | Gain |
+|-------|-----------|------------|------|
+| GPT-5 | 46.3% | **88.1% ± 2.0** | +41.8 pp |
+| Qwen-3-8B (open-weight) | 35.1% | **75.4% ± 2.2** | +40.3 pp |
 
-### Three-Way Synergy
+- Compute-matched on Qwen-3-8B, demo-free ReflexGrad **beats 1-shot LATS (+2.7pp), Tree of Thoughts (+5.7pp), and Self-Refine (+6.7pp)**, all at *p* < 0.05.
+- The 1.5pp cross-model gain difference is within seed noise (*p* ≈ 0.13), indicating the lift is architectural rather than model-dependent.
 
-The key innovation is bidirectional coupling:
-- **TODO → Gradients**: TODO context structures which experiences to analyze for gradient computation
-- **Reflexions → Gradients**: Generated reflexions inform TextGrad backward pass with specific failure patterns  
-- **Gradients → TODO**: Computed gradients determine TODO progression and reflexion consolidation priorities
+## Architecture
 
-##  Installation
+![ReflexGrad architecture](architecture.png)
 
-### Option 1: Using Docker (Recommended)
+*The agent acts on the environment; an evaluator E scores each transition and scores accumulate in a rolling window. The router selects FAST (local refinement, ~85% of steps), SLOW (causal reasoning on consecutive low scores), or COOL (plan execution under cooldown). Each slow activation emits three observable artifacts: a reproducible trigger, a causal diagnostic, and a verified fix.*
 
-```bash
-# Build image
-docker build -t reflexgrad .
+![Sub-stage internals](internals.png)
 
-# Run container
-docker run -it --env OPENAI_API_KEY=your_key reflexgrad
+*FAST process (TextGrad-style four-stage local optimization) and SLOW process (Reflexion-style four-stage causal reasoning), feeding the priority merge.*
 
-# Or pull pre-built image (if available)
-docker pull qpiai/reflexgrad:latest
-docker run -it --env OPENAI_API_KEY=your_key qpiai/reflexgrad:latest
-```
+## Installation
 
-### Option 2: Local Setup
+### Option 1 — Local setup
 
 ```bash
-# Clone repository
 git clone https://github.com/qpiai/reflexgrad.git
 cd reflexgrad
 
-# Create conda environment
-conda create -n reflexgrad python=3.9
+conda create -n reflexgrad python=3.10
 conda activate reflexgrad
 
-# Install dependencies
 pip install -r requirements.txt
 
 # Download ALFWorld data
 alfworld-download
+export ALFWORLD_DATA=/path/to/alfworld/data
 ```
 
-##  API Configuration
-
-ReflexGrad uses a two-tier model architecture:
-
-- **GPT-5** (Responses API with configurable reasoning) for strategic operations
-  - Minimal reasoning (~100 tokens): Fast action selection
-  - Medium reasoning (~1000 tokens): Reflexion generation and TextGrad computation
-- **GPT-4o-mini** for auxiliary tasks (TODO verification, memory compression, loss computation)
-
-Set your OpenAI API key:
+### Option 2 — Docker
 
 ```bash
-export OPENAI_API_KEY=your_key_here
+docker build -t reflexgrad .
+docker run -it --env OPENAI_API_KEY=your_key reflexgrad
 ```
 
-##  Quick Start
+## Model Providers
 
-### Run Single Environment (Test)
+ReflexGrad is model-agnostic. Select the backend with `--model_provider`:
+
+| Provider | Flag | Env vars |
+|----------|------|----------|
+| OpenAI (GPT-5) | `--model_provider openai` | `OPENAI_API_KEY` |
+| OpenRouter (Qwen-3-8B, etc.) | `--model_provider openrouter` | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` |
+| Google Gemini | `--model_provider gemini` | `GEMINI_API_KEY` |
+| vLLM (local) | `--model_provider vllm` | — |
+
+Example (open-weight, reproduces the Qwen-3-8B results):
 
 ```bash
-python main.py --num_trials 1 --num_envs 1 --run_name test_run
+export OPENROUTER_API_KEY=your_key
+export OPENROUTER_MODEL=qwen/qwen3-8b
+export OPENROUTER_FAST_MODEL=qwen/qwen3-8b
 ```
 
-### Run Full Benchmark (9 environments × 4 trials)
+## Quick Start
 
 ```bash
-python main.py --num_trials 4 --num_envs 9 --run_name full_benchmark
+# Single environment (smoke test)
+python main.py --model_provider openrouter --num_trials 1 --num_envs 1 --run_name test_run --env_type alfworld
+
+# Full ALFWorld benchmark (134 tasks)
+python main.py --model_provider openrouter --num_trials 1 --num_envs 134 --run_name alfworld_full --env_type alfworld
 ```
 
-### Reproduce Paper Results
+## Reproducing Paper Results
 
 ```bash
-# Trial 0 results (67% success - Table 1)
-python main.py --num_trials 1 --num_envs 9 --run_name paper_trial0
+# Qwen-3-8B, 134 tasks, headline 75.4% (set OPENROUTER_MODEL=qwen/qwen3-8b)
+python main.py --model_provider openrouter --num_trials 1 --num_envs 134 \
+  --run_name paper_qwen --env_type alfworld
 
-# Trial 0-1 results (67% → 78% improvement - Table 2)
-python main.py --num_trials 2 --num_envs 9 --run_name paper_full
+# GPT-5, 134 tasks, headline 88.1%
+python main.py --model_provider openai --num_trials 1 --num_envs 134 \
+  --run_name paper_gpt5 --env_type alfworld
 ```
 
-See [REPRODUCE.md](REPRODUCE.md) for detailed reproduction instructions.
+The released `n=10` seed list `{42, 123, 456, 789, 1024, 1337, 2025, 3141, 5926, 7531}` and per-seed logs reproduce the reported means. See [REPRODUCE.md](REPRODUCE.md) for full details.
 
-##  Configuration
+## Configuration
 
-Key hyperparameters in `base_config.yaml`:
+Key hyperparameters (`base_config.yaml` / CLI):
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `max_steps` | 28 | Episode length limit |
-| `learning_rate` | 1.0 | LLM-based semantic merge rate (not numeric) |
-| `momentum` | 0.9 | Momentum coefficient for gradient updates |
-| `history_window` | 5 | Recent reflexions kept in working memory |
-| `policy_update_freq` | 3 | Loop 1 frequency (steps) |
-| `reflexion_freq` | 5 | Loop 2 frequency (steps) |
-| `memory_retrieval_top_k` | 6 | Cross-trial memory retrieval count |
+| `max_steps` | 15 | Episode budget for headline results (55 used only for failure analysis) |
+| `k` (gradient cadence) | 3 | Fast process fires every k steps |
+| `m` (slow trigger) | 5 | Slow process fires on m consecutive low scores |
+| `θ_low` (low-progress threshold) | 4 | Score below this counts as low |
+| `c` (cooldown) | 5 | Steps protected for plan execution |
+| `k_M` (working memory) | 10 | Trajectory tuples kept in context |
 
-##  Monitoring Results
+## Repository Structure
 
-Results are logged to:
+```
+reflexgrad/
+├── main.py                       # Entry point (--env_type, --model_provider)
+├── reflexgrad_trial.py           # Core trial engine: routing, FAST/SLOW, merge
+├── reflexgrad_core_v12.py        # ReflexGradCore: dual-process router
+├── reflexgrad_learning_engine.py # FailureMemory, PolicyGradientStore, LearningContext
+├── dynamic_prompting.py          # TextGrad prompt optimization
+├── generate_reflections.py       # Reflexion memory updates
+├── universal_env_wrapper.py      # Env abstraction (ALFWorld, TextWorld, ...)
+├── task_todo_manager.py          # Hierarchical TODO decomposition
+├── task_classifier.py            # Task-type classification
+├── knowledge_classifier.py       # Knowledge transfer
+├── learning_extractor.py         # Trajectory learning extraction
+├── shared_model.py               # OpenAI (GPT-5) provider
+├── shared_model_openrouter.py    # OpenRouter (Qwen, etc.) provider
+├── shared_model_gemini.py        # Google Gemini provider
+├── shared_model_vllm.py          # Local vLLM provider
+├── base_config.yaml              # Hyperparameters
+├── requirements.txt              # Dependencies
+├── Dockerfile                    # Container definition
+├── REPRODUCE.md                  # Detailed reproduction guide
+├── architecture.png              # Architecture diagram (Fig. 1)
+└── internals.png                 # Sub-stage internals (Fig. 2)
+```
 
-- `{run_name}/trial_{n}.log` - Full execution logs with step-by-step trace
-- `{run_name}/step_gradients.jsonl` - TextGrad loss, gradients, and progress scores
-- `{run_name}/metrics.json` - Success rates and statistics per trial
-
-### Example Log Analysis
+## Monitoring Results
 
 ```bash
-# Check success rate
+# Success rate
 grep "ACCURACY" {run_name}/trial_0.log
 
-# View TextGrad progress evolution (0-10 scale)
-grep "Progress:" {run_name}/step_gradients.jsonl | head -15
+# Per-step progress scores and gradients
+grep "Progress score" {run_name}/trial_0.log
 
-# Check reflexion generation timing
-grep "REFLEXION" {run_name}/trial_0.log
-
-# Verify policy updates (Loop 1: steps 3, 6, 9, ...)
-grep "OPTIMIZER" {run_name}/trial_0.log
+# Routing decisions (FAST / SLOW / COOL)
+grep -E "GRADIENT UPDATE|REFLEXION|SLOW" {run_name}/trial_0.log
 ```
 
-##  Project Structure
-
-```
-reflexion/
-├── README.md                      # This file
-├── REPRODUCE.md                   # Detailed reproduction guide
-├── Dockerfile                     # Docker container definition
-├── requirements.txt               # Python dependencies
-├── flowchart.png                  # Architecture diagram
-├── base_config.yaml               # Hyperparameters
-├── main.py                        # Entry point
-├── alfworld_trial.py              # Main algorithm (7500+ lines)
-├── generate_reflections.py        # Reflexion & memory system
-├── dynamic_prompting.py           # Prompt management
-├── env_history.py                 # Episode history tracking
-├── environment_discovery.py       # Environment adaptation
-├── environment_understanding.py   # State analysis
-├── knowledge_classifier.py        # Pattern classification
-├── learning_extractor.py          # Insight extraction
-├── meta_discovery.py              # Meta-learning components
-├── task_classifier.py             # Task type identification
-├── universal_env_wrapper.py       # ALFWorld interface
-└── universal_state_embeddings.py  # State representation
-```
-
-##  Technical Details
-
-### TextGrad Components
-
-1. **Loss Computation** (`textgrad_loss`): Progress scoring on 0-10 scale
-   - Evaluates task alignment: "How close are we to completion?"
-   - Returns hypothesis (textual loss) and numeric score
-
-2. **Backward Pass** (`textgrad_backward`): Gradient generation with reflexion context
-   - Input: Current policy, action, loss, **and all past reflexions**
-   - Output: Textual gradient with justification
-   - Example: "go to stoveburner 2 | JUSTIFICATION: Moves to high-probability pan location"
-
-3. **Optimizer** (`optimizer.step`): LLM-based semantic merge (every 3 steps)
-   - Synthesizes accumulated gradients via GPT-5
-   - Integrates gradient direction into policy using natural language composition
-   - Learning rate η=1.0 (not numeric - LLM controls integration strength)
-
-### Reflexion System
-
-1. **Trigger Conditions**: 
-   - Every 5 steps (milestone check)
-   - On task failure (immediate analysis)
-
-2. **Context Window**: Recent 5-15 action-observation pairs with outcomes
-
-3. **Output**: Causal analysis identifying:
-   - Root cause of failures (not just symptoms)
-   - Generalizable patterns (e.g., "containers must be opened before use")
-   - Corrective strategies
-
-4. **Storage**: Three-tier hierarchy
-   - **Working Memory**: Recent 5 reflexions (full detail, 350 tokens each)
-   - **Consolidated Memory**: Compressed patterns with importance scores
-   - **Episodic Archive**: Complete history for offline analysis
-
-### Memory System
-
-**Importance Scoring** (heuristic-based):
-- Success signal: +5.0 for successful episodes
-- Critical language: +3.0 if contains actionable keywords ("must", "should", "avoid", etc.)
-- Conciseness: +1.0 if <500 tokens
-
-**Forgetting Curve**:
-- Time-based decay: strength × (0.995)^(hours_since_access)
-- Pruning threshold: strength < 0.1
-- Balances retention of valuable patterns against memory capacity
-
-**Cross-Task Transfer** (LLM-based semantic retrieval):
-- No hardcoded similarity metrics
-- Given new task + candidate memories, LLM evaluates utility
-- Transfers patterns like "must open containers" from microwave task to fridge task
-
-##  Citation
-
-If you use this code or build upon this work, please cite:
+## Citation
 
 ```bibtex
-@article{kadu2025reflexgrad,
-  title={ReflexGrad: Three-Way Synergistic Architecture for Zero-Shot Generalization in LLM Agents},
-  author={Kadu, Ankush and Krishnan, Ashwanth},
+@article{kadu2026reflexgrad,
+  title={ReflexGrad: Within-Episode Failure Recovery in LLM Agents via Progress-Gated Dual-Process Routing},
+  author={Kadu, Ankush and Krishnan, Aswanth},
   journal={arXiv preprint arXiv:2511.14584},
-  year={2025},
+  year={2026},
   url={https://arxiv.org/abs/2511.14584},
-  doi={10.48550/arXiv.2511.14584},
-  organization={QpiAI}
+  organization={QpiAI},
+  note={Accepted at ICML 2026 Workshop on Failure Modes in Agentic AI (FoGen)}
 }
 ```
 
-##  License
+## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License — see [LICENSE](LICENSE). Copyright © 2026 QpiAI (Ankush Kadu, Aswanth Krishnan).
 
-Copyright © 2025 QpiAI (Ankush Kadu, Ashwanth Krishnan)
+## Contact
 
-##  Issues & Support
+- **Issues:** https://github.com/qpiai/reflexgrad/issues
+- **Email:** ankush.k@qpiai.tech, ashwanth.krishnan@qpiai.tech
 
-- **Bug Reports**: https://github.com/qpiai/reflexgrad/issues
-- **Questions**: Contact ankush.k@qpiai.tech or ashwanth.krishnan@qpiai.tech
+## Acknowledgments
 
-##  Acknowledgments
-
-This research was conducted at QpiAI. We thank the creators of:
-
-- **ALFWorld** (Shridhar et al., 2021) for the challenging benchmark environment
-- **Reflexion** (Shinn et al., 2023) for episodic memory and self-reflection concepts  
-- **TextGrad** (Yuksekgonul et al., 2024) for the gradient-based optimization framework
-
----
-
-## 📊 Paper Abstract
-
-> Enabling agents to learn from experience and generalize across diverse tasks without task-specific training remains a fundamental challenge in reinforcement learning and decision-making. While recent approaches have explored episodic memory (Reflexion), gradient-based prompt optimization (TextGrad), and hierarchical task decomposition independently, their potential for synergistic integration remains unexplored. We introduce ReflexGrad, a novel architecture that tightly couples three complementary mechanisms: (1) LLM-based hierarchical TODO decomposition for strategic planning, (2) history-aware causal reflection that analyzes recent action patterns to identify failure root causes and enable within-trial learning, and (3) gradient-based optimization for systematic improvement. Unlike prior work relying on few-shot demonstrations, our system achieves true zero-shot generalization through pure LLM semantic reasoning, requiring no task-specific examples, fine-tuning, or hardcoded similarity metrics. Evaluated on ALFWorld benchmark tasks, ReflexGrad demonstrates 67% zero-shot success rate on Trial 0 without any prior task experience or demonstrations, establishing effective performance on first exposure.
+We build on **ALFWorld** (Shridhar et al., 2021), **Reflexion** (Shinn et al., 2023), and **TextGrad** (Yuksekgonul et al., 2024). Compute-matched baselines re-implement **LATS** (Zhou et al., 2024), **Tree of Thoughts** (Yao et al., 2023), and **Self-Refine** (Madaan et al., 2023).

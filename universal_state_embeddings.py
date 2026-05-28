@@ -4,9 +4,25 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Set
 import pickle
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
 from collections import defaultdict
 import json
+import os
+
+# Make sentence_transformers optional to avoid torch/CUDA conflicts
+EMBEDDINGS_AVAILABLE = False
+SentenceTransformer = None
+
+try:
+    # Only import if explicitly enabled or torch is already loaded
+    if os.environ.get('ENABLE_STATE_EMBEDDINGS', 'false').lower() == 'true':
+        from sentence_transformers import SentenceTransformer
+        EMBEDDINGS_AVAILABLE = True
+except ImportError as e:
+    print(f"[WARNING] sentence_transformers not available: {e}")
+    EMBEDDINGS_AVAILABLE = False
+except Exception as e:
+    print(f"[WARNING] Failed to load sentence_transformers: {e}")
+    EMBEDDINGS_AVAILABLE = False
 
 class UniversalStateEmbedding:
     def __init__(self, model_name='all-MiniLM-L6-v2', cache_dir='embedding_cache'):
@@ -14,8 +30,15 @@ class UniversalStateEmbedding:
         Initialize embedding system without FAISS dependency
         Uses numpy for similarity search instead
         """
-        self.encoder = SentenceTransformer(model_name)
-        self.embedding_dim = self.encoder.get_sentence_embedding_dimension()
+        self.enabled = EMBEDDINGS_AVAILABLE
+
+        if self.enabled and SentenceTransformer is not None:
+            self.encoder = SentenceTransformer(model_name)
+            self.embedding_dim = self.encoder.get_sentence_embedding_dimension()
+        else:
+            self.encoder = None
+            self.embedding_dim = 384  # Default MiniLM dimension
+            print("[INFO] State embeddings disabled - running without sentence_transformers")
         
         # Storage - using numpy arrays instead of FAISS
         self.embeddings_matrix = None  # Will be numpy array
@@ -35,15 +58,24 @@ class UniversalStateEmbedding:
     
     def get_state_embedding(self, state_text: str) -> np.ndarray:
         """Generate embedding for state"""
+        if not self.enabled or self.encoder is None:
+            # Return random but deterministic embedding based on text hash
+            import hashlib
+            text_hash = int(hashlib.sha256(state_text.encode()).hexdigest(), 16)
+            np.random.seed(text_hash % (2**32))
+            embedding = np.random.randn(self.embedding_dim).astype(np.float32)
+            embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
+            return embedding
+
         # Normalize text
         state_text = state_text.strip().lower()
-        
+
         # Generate embedding
         embedding = self.encoder.encode(state_text, convert_to_numpy=True)
-        
+
         # L2 normalize for cosine similarity
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
-        
+
         return embedding
     
     def find_similar_states(self, query_embedding: np.ndarray, k: int = 10) -> List[Tuple[int, float]]:
@@ -97,9 +129,9 @@ class UniversalStateEmbedding:
             # Update embeddings matrix
             self._update_embeddings_matrix()
         
-     
+
         # Store outcome WITH task embedding
-        if 'task' in outcome:
+        if 'task' in outcome and self.enabled and self.encoder is not None:
             outcome['task_embedding'] = self.encoder.encode(outcome['task'], convert_to_numpy=True)
         self.state_outcomes[state_id][action].append(outcome)
         
@@ -140,10 +172,10 @@ class UniversalStateEmbedding:
             })
         }
         
-       
+
         # Get current task embedding if provided
         current_task_embedding = None
-        if task:
+        if task and self.enabled and self.encoder is not None:
             current_task_embedding = self.encoder.encode(task, convert_to_numpy=True)
 
         # Process similar states
@@ -203,8 +235,11 @@ class UniversalStateEmbedding:
     
     def save_cache(self):
         """Save embeddings and outcomes to disk"""
+        if not self.enabled:
+            return  # Skip saving cache if embeddings are disabled
+
         cache_file = self.cache_dir / 'embedding_cache.pkl'
-        
+
         cache_data = {
             'embeddings_matrix': self.embeddings_matrix,
             'state_embeddings': self.state_embeddings,
@@ -212,27 +247,32 @@ class UniversalStateEmbedding:
             'state_outcomes': dict(self.state_outcomes),
             'next_state_id': self.next_state_id
         }
-        
+
         with open(cache_file, 'wb') as f:
             pickle.dump(cache_data, f)
     
     def load_cache(self):
         """Load embeddings and outcomes from disk"""
+        if not self.enabled:
+            return  # Skip loading cache if embeddings are disabled
+
         cache_file = self.cache_dir / 'embedding_cache.pkl'
-        
+
         if cache_file.exists():
-        
-            with open(cache_file, 'rb') as f:
-                cache_data = pickle.load(f)
-            
-            self.embeddings_matrix = cache_data.get('embeddings_matrix')
-            self.state_embeddings = cache_data.get('state_embeddings', {})
-            self.state_texts = cache_data.get('state_texts', {})
-            self.state_outcomes = defaultdict(lambda: defaultdict(list), 
-                                                cache_data.get('state_outcomes', {}))
-            self.next_state_id = cache_data.get('next_state_id', 0)
-            
-            print(f"[EMBEDDINGS] Loaded {len(self.state_texts)} states from cache")
+            try:
+                with open(cache_file, 'rb') as f:
+                    cache_data = pickle.load(f)
+
+                self.embeddings_matrix = cache_data.get('embeddings_matrix')
+                self.state_embeddings = cache_data.get('state_embeddings', {})
+                self.state_texts = cache_data.get('state_texts', {})
+                self.state_outcomes = defaultdict(lambda: defaultdict(list),
+                                                    cache_data.get('state_outcomes', {}))
+                self.next_state_id = cache_data.get('next_state_id', 0)
+
+                print(f"[EMBEDDINGS] Loaded {len(self.state_texts)} states from cache")
+            except Exception as e:
+                print(f"[EMBEDDINGS] Failed to load cache: {e}")
 
 
 # Global instance

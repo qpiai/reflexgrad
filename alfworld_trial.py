@@ -4,6 +4,10 @@ from universal_state_embeddings import state_embeddings
 import os
 if os.getenv("MODEL_PROVIDER", "openai").lower() == "gemini":
     from shared_model_gemini import model, fast_model
+elif os.getenv("MODEL_PROVIDER", "openai").lower() == "openrouter":
+    from shared_model_openrouter import model, fast_model
+elif os.getenv("MODEL_PROVIDER", "openai").lower() == "vllm":
+    from shared_model_vllm import model, fast_model
 else:
     from shared_model import model, fast_model
 """Universal trial execution with adaptive learning and discovery"""
@@ -24,14 +28,18 @@ from dynamic_prompting import DynamicPromptGenerator, set_debug_flags
 from environment_understanding import EnvironmentUnderstanding
 from environment_discovery import UniversalEnvironmentDiscovery
 from meta_discovery import MetaEnvironmentKnowledge
-from universal_env_wrapper import UniversalEnvWrapper, TextWorldWrapper, JerichoWrapper, ScienceWorldWrapper, BabyAIWrapper, NetHackWrapper ,ALFWorldWrapper
+from universal_env_wrapper import UniversalEnvWrapper, TextWorldWrapper, JerichoWrapper, ScienceWorldWrapper, BabyAIWrapper, NetHackWrapper ,ALFWorldWrapper, AppWorldWrapper
 
 # SEQUENTIAL LEARNING SYSTEM - Smart knowledge transfer
 from task_classifier import task_classifier
 from knowledge_classifier import knowledge_classifier
 from learning_extractor import learning_extractor
 
-from vllm import LLM, SamplingParams
+try:
+    from vllm import LLM, SamplingParams
+except ImportError:
+    from shared_model import SamplingParams
+    LLM = None
 import random
 import pickle
 # Global instances for optimization - PERSIST ACROSS TRIALS
@@ -70,7 +78,6 @@ class ActionPolicy:
 
     def _generate(self, prompt: str, temperature: float = 0.3, max_tokens: int = 200) -> str:
         """Helper to generate text using fast_model.generate() API"""
-        from vllm import SamplingParams
         output = self.model.generate(
             [prompt],
             SamplingParams(
@@ -83,58 +90,43 @@ class ActionPolicy:
 
     def forward(self, state: str, task: str, valid_actions: List[str],
                 inventory: List[str] = None, todo: str = None,
-                reflexion_insights: str = None) -> str:
+                reflexion_insights: str = None,
+                recent_actions: List[str] = None,
+                next_action_guidance: str = None) -> str:
         """
-        Generate action using current policy + constraints + accumulated gradients + Reflexion insights.
-        This is the forward pass in TextGrad.
+        FIX #18 (Nov 30): PURE DIRECT EXECUTION - NO FALLBACKS
 
-        Args:
-            reflexion_insights: Within-trial strategic insights from Reflexion (every 5 steps)
+        ROOT CAUSE OF BUG: The old code had fuzzy matching that corrupted actions:
+        "take saltshaker 2" → "take creditcard 2" (wrong object!)
 
-        Returns:
-            Selected action from valid_actions
+        NEW APPROACH: Execute EXACTLY what TextGrad recommends
+        - If TextGrad has guidance → execute it directly (let ALFWorld accept/reject)
+        - ALFWorld's response becomes the learning signal
+        - NO fallbacks that could corrupt the action-learning mapping
+        - TextGrad learns from its own recommendations, not corrupted alternatives
         """
-        # Construct policy prompt
-        policy_prompt = f"""You are an action selection policy being optimized through textual gradients.
 
-CURRENT POLICY:
-{self.base_policy}
+        # ========== DIRECT EXECUTION OF TEXTGRAD GUIDANCE ==========
+        if next_action_guidance and next_action_guidance.strip():
+            # Extract just the action (before JUSTIFICATION)
+            guidance_action = next_action_guidance.split(' JUSTIFICATION')[0].strip()
 
-STRATEGIC CONSTRAINTS (from Reflexion cross-trial learning):
-{self._format_constraints()}
+            # Check for loop (same action repeated 3+ times)
+            is_loop = recent_actions and recent_actions[-5:].count(guidance_action) >= 3
 
-REFLEXION INSIGHTS (from within-trial strategic analysis):
-{reflexion_insights if reflexion_insights else 'No Reflexion insights yet (insights generated every 5 steps)'}
+            if not is_loop:
+                # Execute TextGrad's recommendation DIRECTLY
+                # Let ALFWorld accept or reject - that becomes the learning signal
+                print(f"[FIX #18] DIRECT EXECUTE TextGrad recommendation: '{guidance_action}'")
+                return guidance_action
+            else:
+                print(f"[FIX #18] TextGrad recommendation in LOOP - using 'look' to break")
+                return "look"  # Safe action to break loops and get new info
 
-ACCUMULATED GRADIENTS (from this trial):
-{self._format_gradients()}
-
-CURRENT SITUATION:
-Task: {task}
-{f'Current subtask: {todo}' if todo else ''}
-State: {state}
-{f'Inventory: {", ".join(inventory)}' if inventory else 'Inventory: empty'}
-
-VALID ACTIONS:
-{self._format_actions(valid_actions)}
-
-Based on your policy, constraints, and gradients, select the OPTIMAL action.
-Output ONLY the exact action text from the valid actions list."""
-
-        # Log synergy with Reflexion
-        if reflexion_insights:
-            print(f"[TEXTGRAD SYNERGY] Using {len(reflexion_insights)} chars of Reflexion insights")
-
-        # Use LLM to generate action following policy
-        print(f"[TEXTGRAD POLICY] Running policy.forward() with {len(self.gradients)} accumulated gradients")
-        action = self._generate(policy_prompt, temperature=0.7, max_tokens=100)
-        print(f"[TEXTGRAD POLICY] Model generated: '{action[:100]}'")
-
-        # Find best match from valid actions
-        best_match = self._find_best_action_match(action, valid_actions)
-        final_action = best_match if best_match else valid_actions[0]
-        print(f"[TEXTGRAD POLICY] Final selected action: '{final_action}'")
-        return final_action
+        # ========== NO GUIDANCE - USE FIRST VALID ACTION ==========
+        # If no TextGrad guidance, use first valid action (usually 'examine' or 'look')
+        print(f"[FIX #18] No TextGrad guidance - using first valid action: '{valid_actions[0]}'")
+        return valid_actions[0]
 
     def _format_constraints(self) -> str:
         """Format Reflexion's strategic constraints"""
@@ -153,27 +145,114 @@ Output ONLY the exact action text from the valid actions list."""
         """Format valid actions list"""
         return "\n".join([f"  {i+1}. {a}" for i, a in enumerate(actions[:30])])  # Limit to 30
 
-    def _find_best_action_match(self, generated: str, valid: List[str]) -> Optional[str]:
-        """Find best matching action from valid list"""
-        generated_lower = generated.lower()
+    def _format_recent_actions(self, actions: List[str], max_show: int = 7) -> str:
+        """Format recent actions for loop prevention"""
+        if not actions:
+            return "No actions yet"
 
-        # Exact match
+        recent = actions[-max_show:]
+        lines = []
+        for i, action in enumerate(recent, 1):
+            # Count how many times this action appears in recent history
+            count = recent.count(action)
+            marker = f" [REPEATED x{count}]" if count > 1 else ""
+            lines.append(f"  {i}. {action}{marker}")
+
+        return "\n".join(lines)
+
+    def _find_best_action_match(self, generated: str, valid: List[str]) -> Optional[str]:
+        """Find best matching action from valid list - VERB-PRIORITY + PREREQUISITE AWARENESS"""
+        generated_lower = generated.lower().strip()
+
+        # 1. Exact match (highest priority)
         for action in valid:
             if action.lower() == generated_lower:
                 return action
 
-        # Substring match
+        # 2. VERB-PRIORITY MATCHING: Match verb FIRST, then target
+        # This prevents "open cabinet 1" → "examine cabinet 1" corruption
+        gen_words = generated_lower.split()
+        if gen_words:
+            gen_verb = gen_words[0]  # First word is the verb
+            gen_target = ' '.join(gen_words[1:]) if len(gen_words) > 1 else ''
+
+            # Look for actions with SAME VERB first
+            verb_matches = []
+            for action in valid:
+                act_words = action.lower().split()
+                if act_words and act_words[0] == gen_verb:
+                    verb_matches.append(action)
+
+            # Among verb matches, find best target match
+            if verb_matches:
+                # Exact target match with same verb
+                for action in verb_matches:
+                    if action.lower() == generated_lower:
+                        return action
+                    # Check if target matches
+                    act_target = ' '.join(action.lower().split()[1:])
+                    if gen_target and act_target == gen_target:
+                        return action
+
+                # Partial target match with same verb (handles "take pillow 1" matching "take pillow 1 from armchair 1")
+                for action in verb_matches:
+                    act_target = ' '.join(action.lower().split()[1:])
+                    if gen_target:
+                        # Check if generated target is contained in valid action target
+                        if gen_target in act_target:
+                            return action
+                        # Check if valid action target starts with generated target (handles partial)
+                        if act_target.startswith(gen_target):
+                            return action
+
+                # If we have verb matches but no target match, return first verb match
+                if verb_matches:
+                    return verb_matches[0]
+
+            # 2b. PREREQUISITE ACTION AWARENESS (UNIVERSAL - no hardcoded verbs)
+            # FIX #17B: If ANY verb has no matches, check if we need to "go to" the target first
+            # This is universal - works for any verb without hardcoded lists
+            if not verb_matches and gen_target:
+                # Extract the location from target (e.g., "cabinet 1" from "cabinet 1", "armchair 1" from "pillow 1 from armchair 1")
+                # Handle "X from Y" patterns
+                if ' from ' in gen_target:
+                    location = gen_target.split(' from ')[-1]  # Get the location after "from"
+                elif ' in ' in gen_target:
+                    location = gen_target.split(' in ')[-1]
+                elif ' on ' in gen_target:
+                    location = gen_target.split(' on ')[-1]
+                else:
+                    location = gen_target  # The target itself is the location (e.g., "cabinet 1")
+
+                # Look for "go to [location]" in valid actions
+                for action in valid:
+                    if action.lower() == f'go to {location}':
+                        return action
+
+                # Also try partial location match (e.g., "cabinet 1" matches "go to cabinet 1")
+                for action in valid:
+                    if action.lower().startswith('go to ') and location in action.lower():
+                        return action
+
+                # FIX #11: CRITICAL - If we're already at the location (no "go to" needed),
+                # return the generated action AS-IS instead of falling back to a different verb!
+                # ALFWorld may accept actions not in admissible_commands list.
+                # This prevents "open cabinet 1" → "examine cabinet 1" corruption.
+                print(f"[ACTION MATCH FIX] Interaction verb '{gen_verb}' not in valid_actions, returning as-is: '{generated}'")
+                return generated  # Return original action, let ALFWorld handle it
+
+        # 3. Fallback: Full phrase substring match (only for non-interaction verbs)
         for action in valid:
             if generated_lower in action.lower() or action.lower() in generated_lower:
                 return action
 
-        # Word overlap
-        gen_words = set(generated_lower.split())
+        # 4. Last resort: Word overlap scoring (only for non-interaction verbs)
+        gen_words_set = set(generated_lower.split())
         best_score = 0
         best_action = None
         for action in valid:
             act_words = set(action.lower().split())
-            overlap = len(gen_words & act_words)
+            overlap = len(gen_words_set & act_words)
             if overlap > best_score:
                 best_score = overlap
                 best_action = action
@@ -183,17 +262,16 @@ Output ONLY the exact action text from the valid actions list."""
 
 class TextGradLoss:
     """
-    Evaluates action quality for gradient computation.
-    This is the loss function in TextGrad that evaluates the VARIABLE (policy).
+    GOAL-ALIGNED Loss Function for TextGrad.
+    Evaluates if action helps achieve TASK GOAL, not just execution success.
     """
 
     def __init__(self, model):
         self.model = model  # Store model for loss computation
         self._init_prompts()  # Initialize prompt templates
 
-    def _generate(self, prompt: str, temperature: float = 0.3, max_tokens: int = 300) -> str:
+    def _generate(self, prompt: str, temperature: float = 0.3, max_tokens: int = 400) -> str:
         """Helper to generate text using fast_model.generate() API"""
-        from vllm import SamplingParams
         output = self.model.generate(
             [prompt],
             SamplingParams(
@@ -205,71 +283,121 @@ class TextGradLoss:
         return output.outputs[0].text.strip()
 
     def _init_prompts(self):
-        self.evaluation_prompt_template = """You are evaluating whether an action serves its task requirement.
+        self.evaluation_prompt_template = """You are evaluating whether an action helps achieve the TASK GOAL.
 
-TASK REQUIREMENT: {task}
-POLICY USED: {policy}
+TASK GOAL: {task}
+CURRENT SUBTASK (from TODO system): {subtask}
+
+LEARNED INSIGHTS FROM PREVIOUS ATTEMPTS:
+{reflexion_insights}
+
+POLICY APPROACH: {policy}
 STRATEGIC CONSTRAINTS: {constraints}
 
-SITUATION BEFORE ACTION:
+FULL TRAJECTORY HISTORY (check for repetitive/looping actions):
+{trajectory_history}
+
+STATE BEFORE ACTION:
 {state_before}
 
 ACTION TAKEN:
 {action}
 
-SITUATION AFTER ACTION:
+STATE AFTER ACTION:
 {state_after}
 
-Evaluate this action across four critical dimensions:
+=== CRITICAL EVALUATION (Focus on GOAL ALIGNMENT, not just execution) ===
 
-1. TASK ALIGNMENT (CRITICAL):
-   - What is the PRIMARY goal or operation required by the task?
-   - Does the action directly contribute to achieving that specific goal?
-   - If the task requires a specific operation, does the action perform or enable that operation?
-   - Is this action semantically compatible with the task requirement?
+1. TASK GOAL ALIGNMENT (MOST IMPORTANT):
+   - What does the TASK GOAL require?
+   - What did this action actually produce (see STATE AFTER)?
+   - Does the RESULT match what the TASK GOAL is asking for?
+   - If the task requires operation X but action performed operation Y, this is NOT goal-aligned.
 
-2. SEMANTIC CORRECTNESS:
-   - Does the action achieve the same end state the task requires, even if using different wording?
-   - Can different actions accomplish the same underlying goal through different means?
-   - Does the action's effect align with what the task is asking for?
+2. SUBTASK/TODO ALIGNMENT:
+   - Current subtask: "{subtask}"
+   - Did this action help achieve this subtask?
+   - If subtask conflicts with task goal, trust the TASK GOAL.
 
-3. PROGRESS ASSESSMENT:
-   - Did the state change in a way that brings us closer to task completion?
-   - Cite specific evidence from state_after.
-   - Is this a necessary step, or a distraction from the task goal?
+3. LOOP/REPETITION CHECK:
+   - Look at FULL TRAJECTORY HISTORY above.
+   - Is this action repeating a previous action that didn't help?
+   - Repetitive actions that don't make progress should be flagged.
 
-4. STRATEGIC COMPLIANCE:
-   - Does the action respect all strategic constraints from previous learning?
-   - Does it avoid known failure patterns?
+4. LEARNED INSIGHT COMPLIANCE:
+   - Check if action contradicts any LEARNED INSIGHTS above.
+   - Previous insights reveal what DOESN'T work for this type of task.
 
-Provide textual feedback (criticism) that will be used to compute policy gradients.
+5. EVIDENCE FROM STATE CHANGE:
+   - What specifically changed between state_before and state_after?
+   - Does this change bring us closer to the TASK GOAL?
 
-Answer:
-TASK ALIGNMENT: [Good/Questionable/Poor] - [Explain how action relates to task goal]
-SEMANTIC CORRECTNESS: [Correct/Incorrect] - [Does action achieve task requirement?]
-PROGRESS: [Positive/Neutral/Negative] - [State change assessment with evidence]
-STRATEGIC COMPLIANCE: [Yes/No] - [Constraint violations?]
-OVERALL_CRITICISM: [Concise critique emphasizing whether action serves the task requirement]"""
+VERDICT: [GOAL_ALIGNED / GOAL_NOT_ALIGNED / PARTIAL_PROGRESS]
+REASON: [Explain specifically WHY the action does or doesn't help achieve the TASK GOAL]
+NEXT_ACTION_HINT: [What should be done to actually achieve the TASK GOAL?]"""
 
     def __call__(self, action: str, state_before: str, state_after: str,
-                 task: str, policy: ActionPolicy) -> str:
+                 task: str, policy, trajectory_context: list = None,
+                 subtask: str = None, reflexion_insights: list = None) -> str:
         """
         Compute textual loss (criticism) for the action taken by policy.
 
+        GOAL-ALIGNED LOSS: Evaluates if action helps achieve TASK GOAL,
+        not just if action executed successfully.
+
+        Args:
+            trajectory_context: List of dicts with keys: action, observation
+            subtask: Current subtask from TODO manager (guidance)
+            reflexion_insights: List of learned insights from Reflexion episodic memory
+
         Returns:
-            Textual loss (criticism/feedback)
+            Textual loss focusing on GOAL ALIGNMENT
         """
+        # Format ALL trajectory history (helps detect loops and repetitive actions)
+        # FIX #28: NO TRUNCATION - full observation needed to evaluate goal alignment
+        trajectory_history = "No previous actions yet."
+        if trajectory_context and len(trajectory_context) > 0:
+            history_lines = []
+            for i, step in enumerate(trajectory_context, 1):  # ALL steps, not just last 5
+                act = step.get('action', 'unknown')
+                obs = step.get('observation', '')  # FIX #28: Full observation for accurate loss eval
+                history_lines.append(f"  Step {i}: {act} -> {obs}")
+            trajectory_history = "\n".join(history_lines)
+
+        # Use subtask if provided, otherwise derive from task
+        current_subtask = subtask if subtask else f"Working toward: {task}"
+
+        # Format Reflexion insights
+        # FIX #28: NO TRUNCATION - full insights contain critical learning
+        formatted_insights = "No learned insights yet (first trial)."
+        if reflexion_insights and len(reflexion_insights) > 0:
+            insight_lines = []
+            for i, insight in enumerate(reflexion_insights[-3:], 1):  # Last 3 insights
+                if isinstance(insight, dict):
+                    insight_text = insight.get('reflection', insight.get('insight', str(insight)))
+                else:
+                    insight_text = str(insight)
+                insight_lines.append(f"  {i}. {insight_text}")  # FIX #28: Full insight
+            formatted_insights = "\n".join(insight_lines)
+
+        # Get policy text safely
+        policy_text = policy.base_policy if hasattr(policy, 'base_policy') else str(policy)
+        constraints_text = policy._format_constraints() if hasattr(policy, '_format_constraints') else "None"
+
         prompt = self.evaluation_prompt_template.format(
             task=task,
-            policy=policy.base_policy[:200],  # Truncate for context
-            constraints=policy._format_constraints(),
+            subtask=current_subtask,
+            reflexion_insights=formatted_insights,
+            policy=policy_text,
+            constraints=constraints_text,
+            trajectory_history=trajectory_history,
             state_before=state_before,
             action=action,
             state_after=state_after
         )
 
-        print(f"[TEXTGRAD LOSS] Computing loss for action: '{action[:50]}'")
-        loss_text = self._generate(prompt, temperature=0.3, max_tokens=300)
+        print(f"[TEXTGRAD LOSS] Computing GOAL-ALIGNED loss for action: '{action[:50]}'")
+        loss_text = self._generate(prompt, temperature=0.3, max_tokens=400)
         loss_summary = loss_text[:150] + "..." if len(loss_text) > 150 else loss_text
         print(f"[TEXTGRAD LOSS] Computed: {loss_summary}")
         return loss_text
@@ -319,18 +447,19 @@ def textgrad_backward(policy: ActionPolicy, action: str, loss_text: str, model, 
     valid_actions = context.get('valid_actions', [])  # CRITICAL: What actions are actually possible
 
     # Format state-action-observation history WITH progress status for TextGrad learning
-    # Progress status helps TextGrad learn to avoid actions that caused NO_PROGRESS
+    # FIX #36: Show FULL history so LLM can see complete pattern of what was tried
+    # Previously truncated to last 10, hiding repetition patterns from the LLM
     if state_action_obs_history:
         history_str = ""
-        for idx, triple in enumerate(state_action_obs_history[-10:], 1):
+        for idx, triple in enumerate(state_action_obs_history, 1):  # FIX #36: ALL history, not [-10:]
             state_before = triple['state']
             action_taken = triple['action']
             obs_after = triple['observation']
             progress = triple.get('progress', 'UNKNOWN')
 
-            history_str += f"\n  {idx}. State: {state_before[:100]}"
+            history_str += f"\n  {idx}. State: {state_before[:200]}"  # FIX #36: Increased from 100 to 200
             history_str += f"\n     Action: {action_taken}"
-            history_str += f"\n     Result: {obs_after[:100]}"
+            history_str += f"\n     Result: {obs_after[:200]}"  # FIX #36: Increased from 100 to 200
             history_str += f"\n     Progress: {progress}\n"  # ✅ TextGrad sees if action made progress!
         tried_actions_str = history_str
     else:
@@ -353,14 +482,27 @@ def textgrad_backward(policy: ActionPolicy, action: str, loss_text: str, model, 
     # Format TODO
     todo_str = todo if todo else "No current TODO"
 
-    # Format valid actions (first 15 to avoid huge context, but enough to see options)
+    # FIX #21: Show ALL valid actions - no cap!
+    # Previously capped at 15, but remove/unfriend actions were at position 21-25 and LLM couldn't see them
     if valid_actions:
-        valid_sample = valid_actions[:15]
-        valid_actions_str = "\n".join([f"  - {a}" for a in valid_sample])
-        if len(valid_actions) > 15:
-            valid_actions_str += f"\n  ... and {len(valid_actions) - 15} more actions"
+        valid_actions_str = "\n".join([f"  - {a}" for a in valid_actions])
     else:
         valid_actions_str = "No valid actions available (this should not happen!)"
+
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # FIX #20: UNIVERSAL ACTION VALIDITY FEEDBACK
+    # When action returns "Nothing happens", the agent needs to understand WHY.
+    # By explicitly stating whether action was in valid_actions, the gradient can
+    # learn preconditions from the environment's own feedback - 100% universal.
+    # ═══════════════════════════════════════════════════════════════════════════════
+    action_in_valid = action in valid_actions
+    if action_in_valid:
+        action_validity_str = "✓ Action was IN valid_actions list (syntax correct)"
+    else:
+        # Find similar actions to help understand what precondition was missing
+        similar_actions = [a for a in valid_actions if any(word in a for word in action.split()[:2])][:3]
+        similar_str = ", ".join(similar_actions) if similar_actions else "none found"
+        action_validity_str = f"✗ Action was NOT in valid_actions (environment rejected it). Similar valid actions: {similar_str}"
 
     gradient_prompt = f"""You are computing a textual gradient to improve an action selection policy.
 
@@ -414,12 +556,23 @@ The policy must enable reasoning that differentiates:
 - Actions that address a different (though possibly related) objective
 
 ═══════════════════════════════════════════════════════════════════════════════
+CRITICAL: OBJECT DISCOVERY PRINCIPLE
+═══════════════════════════════════════════════════════════════════════════════
+
+If an object mentioned in the task is now VISIBLE (discovered), the agent should
+INTERACT with it (take, examine, use) BEFORE moving to another location.
+Finding a required object is progress - don't leave it behind!
+
+═══════════════════════════════════════════════════════════════════════════════
 
 CURRENT POLICY:
 {policy.base_policy}
 
 ACTION TAKEN BY POLICY:
 {action}
+
+ACTION VALIDITY STATUS:
+{action_validity_str}
 
 LOSS (Criticism of this action):
 {loss_text}
@@ -430,10 +583,12 @@ Your task: Compute the gradient ∂loss/∂policy.
 Using ALL the context above, describe HOW the policy should be modified to avoid
 this loss in the future. Be smart:
 - Don't recommend actions that were already tried (check HISTORY)
-- Align with TODO requirements (check CURRENT TODO)
+- Consider TODO as a guide, but prioritize TASK REQUIREMENT when they conflict
 - Consider Reflexion insights (check STRATEGIC INSIGHTS)
-- Ensure task requirement is met (check TASK REQUIREMENT)
+- TASK REQUIREMENT is the ultimate goal - adapt plan if observations suggest better path
 - Recommend only from VALID ACTIONS (check what's actually possible)
+- If ACTION VALIDITY STATUS shows "NOT in valid_actions", the action was REJECTED by environment.
+  Examine the similar valid actions to understand what precondition was missing.
 
 Provide a concise, actionable policy improvement:
 - What aspect of the policy led to this suboptimal action?
@@ -448,7 +603,6 @@ GRADIENT: [specific improvement instruction for the policy]
 
     print(f"[TEXTGRAD BACKWARD] Computing gradient for action: '{action[:50]}'")
     # Use fast_model.generate() API
-    from vllm import SamplingParams
     output = model.generate(
         [gradient_prompt],
         SamplingParams(max_tokens=200, temperature=0.3, stop=["\n\n"])
@@ -483,7 +637,6 @@ class TextGradOptimizer:
 
     def _generate(self, prompt: str, temperature: float = 0.3, max_tokens: int = 400) -> str:
         """Helper to generate text using fast_model.generate() API"""
-        from vllm import SamplingParams
         output = self.model.generate(
             [prompt],
             SamplingParams(
@@ -570,6 +723,30 @@ UPDATED_POLICY: [new policy text incorporating gradients]
 # ============================================================================
 # END TEXTGRAD COMPONENTS
 # ============================================================================
+
+def format_reflexion_insights_for_policy(working_reflexions: List, max_insights: int = 3) -> str:
+    """
+    Format working reflexions as concise insights for policy.forward().
+
+    This consolidates within-trial reflexion insights into a focused format
+    that the learned policy can use for decision making.
+    """
+    if not working_reflexions:
+        return ""
+
+    insights = []
+    for ref in working_reflexions[-max_insights:]:
+        if isinstance(ref, dict):
+            # Handle dict format - try multiple possible keys
+            text = ref.get('reflection', ref.get('insight', ref.get('hypothesis', str(ref))))
+        else:
+            text = str(ref)
+        # Truncate to 100 chars for focus
+        if len(text) > 100:
+            text = text[:97] + "..."
+        insights.append(text)
+
+    return "\n".join([f"- {i}" for i in insights])
 
 def calculate_task_similarity(task1: str, task2: str) -> float:
     """Calculate similarity using pure word overlap - no domain knowledge"""
@@ -1099,10 +1276,11 @@ def reasoning_based_action_selection_batch(
         failure_history = data.get('failure_history', [])
         # ACTION HISTORY ENHANCEMENT: Get progress scores
         progress_history = data.get('progress_history', [])
-        
+
         # Keep all your existing analysis exactly as is
-        recent_10_actions = [act for act, _, _ in action_history[-10:]] if action_history else []
-        recent_3_actions = [act for act, _, _ in action_history[-3:]] if action_history else []
+        # FIX #8 BUG: action_history now contains strings, not tuples
+        recent_10_actions = action_history[-10:] if action_history else []
+        recent_3_actions = action_history[-3:] if action_history else []
         never_tried_count = sum(1 for act in valid_actions if act not in tried_actions)
         
         stuck_actions = []
@@ -1146,15 +1324,15 @@ def reasoning_based_action_selection_batch(
             current_todo = data['todo_manager']._get_current_todo()
             if current_todo:
                 current_todo_guidance = f"""
-🎯 CURRENT FOCUS (Complete this FIRST before moving to next TODO):
+📋 SUGGESTED FOCUS (a guide, not a constraint):
    {current_todo.active_form}
    Attempts so far: {current_todo.attempts}
 
-   SEQUENTIAL EXECUTION RULES:
-   - Your ONLY goal right now is completing the current TODO above
-   - Do NOT work on other TODOs until this one is marked complete
-   - Each action should make observable progress toward THIS specific subgoal
-   - If stuck after 3 attempts, try a different approach for the SAME subgoal
+   ADAPTIVE EXECUTION (be intelligent, not rigid):
+   - This TODO is a SUGGESTED sequence, not a strict requirement
+   - If you discover an opportunity that advances the MAIN TASK (above), TAKE IT
+   - The original plan may be imperfect - adapt based on what you observe
+   - Trust your observations over the plan when they conflict
 
 """
 
@@ -1232,19 +1410,20 @@ Observed progress: {step_gradient.get('progress_score', 0)}/10
    - Unique actions tried: {len(tried_actions)}
    - Never tried actions: {never_tried_count}/{len(valid_actions)}"""
 
-        # Loop detection: Keep passive detection for stats, but NO warnings
-        # Let reflexion naturally identify loops through simplified prompt
-        # Reflexion paper: LLM identifies loops when asked "Are you stuck in a loop?"
+        # RESTORED: Explicit loop warning - critical for breaking loops!
+        # The LLM needs to be told which actions are stuck
+        if loop_detected:
+            prompt += f"\n   ⚠️ WARNING: Stuck in loop with actions: {stuck_actions[:3]}"
+            prompt += f"\n   🚫 DO NOT select these actions again!"
 
         prompt += f"""
 
 9. RECENT TRAJECTORY:"""
 
         if action_history:
-            # Show last 5 actions with clean observations (proactive ranking handles guidance)
-            for j, (act, obs, reasoning) in enumerate(action_history[-5:], 1):
-                obs_preview = obs[:80].replace('\n', ' ')
-                prompt += f"\n   {j}. {act} → {obs_preview}..."
+            # Show last 5 actions (FIX #8 BUG: action_history now contains strings only)
+            for j, act in enumerate(action_history[-5:], 1):
+                prompt += f"\n   {j}. {act}"
         else:
             prompt += "\n   No actions taken yet"
 
@@ -1741,34 +1920,116 @@ Your selected action:"""
                 log_debug(f"[REFLEXION-FILTER] ENV {env_id}: {original_count} → {len(valid_actions)} actions after veto")
 
         # ============================================================================
-        # TRUE SYNERGY: ALWAYS use comprehensive Reflexion prompt
+        # PURE LEARNING MODE (Nov 22 Fix): Direct TextGrad Use + Reflexion Veto
         # ============================================================================
-        # CRITICAL FIX: Step gradients are now CONTEXT in the prompt (line 1038),
-        # NOT direct action commands. This enables true synergy:
+        # FIX: TextGrad recommendations are now used DIRECTLY (not as LLM context)
+        # This restores true learning where gradient optimization drives behavior.
         #
-        # The comprehensive prompt synthesizes:
-        #   - TODO sequential guidance (task_todo_manager)
-        #   - Success pattern replay (reflexion_memory)
-        #   - Action scoring (intelligent prioritization)
-        #   - Reflexion insights (episodic memory, every 5 steps)
-        #   - TextGrad components (learned policy, constraints)
-        #   - Step gradients (tactical recommendations) ← CONTEXT, not command!
+        # Architecture:
+        #   1. TextGrad generates action recommendation (from previous step)
+        #   2. Reflexion provides veto power (avoid patterns from episodic memory)
+        #   3. Action selection uses TextGrad directly (NO LLM reasoning)
+        #   4. Fuzzy matching handles minor syntax differences
+        #   5. NO fallbacks that hide learning failures
         #
-        # LLM reasons through ALL information to select optimal action.
-        # This restores the proven 67% Trial 0 success + adds TextGrad learning.
-        #
-        # Previous bug: textgrad_rec was used DIRECTLY as action (bypass),
-        # making it TextGrad-only mode despite Reflexion running.
+        # This fixes the fundamental issue where learning signals were generated
+        # but ignored by LLM reasoning, resulting in 0% learning utilization.
         # ============================================================================
 
-        # ALL environments use comprehensive Reflexion+TextGrad prompt
-        synergy_outputs.append(None)
-        need_llm.append(i)
+        # Clean TextGrad recommendation (strip JUSTIFICATION if present)
+        # FIX (Nov 22): TextGrad sometimes appends "JUSTIFICATION: explanation"
+        # Strip this to get just the action for exact matching
+        if textgrad_rec and ' JUSTIFICATION:' in textgrad_rec:
+            textgrad_rec = textgrad_rec.split(' JUSTIFICATION:')[0].strip()
+            log_debug(f"[TEXTGRAD-CLEAN] ENV {env_id}: Stripped JUSTIFICATION, action: '{textgrad_rec}'")
 
-        if textgrad_rec:
-            log_debug(f"[COMPREHENSIVE-PROMPT] ENV {env_id}: Using full reasoning with TextGrad context: '{textgrad_rec[:50]}'")
+        # FIX #8 (Nov 23): HARD ACTION REPETITION BLOCKING
+        # Track action usage history for this environment
+        if 'action_history' not in batch_data[i]:
+            batch_data[i]['action_history'] = []
+
+        action_history = batch_data[i]['action_history']
+
+        # Count how many times each action has been used
+        from collections import Counter
+        action_counts = Counter(action_history)
+
+        # DIRECT TEXTGRAD USE (no LLM reasoning!)
+        if textgrad_rec and textgrad_rec in valid_actions:
+            # FIX #8: Block actions used >2 times (hard constraint, overrides LLM)
+            if action_counts.get(textgrad_rec, 0) > 2:
+                log_debug(f"[FIX8-BLOCK] ENV {env_id}: TextGrad recommended '{textgrad_rec}' but it's been used {action_counts[textgrad_rec]} times - BLOCKING")
+
+                # FIX #8 CORRECTED: Prioritize unexplored actions, then use random selection to break cycles
+                # This prevents falling back to overused actions which defeats the purpose
+
+                # Priority 1: Never-tried actions (count=0)
+                never_tried = [a for a in valid_actions if action_counts.get(a, 0) == 0]
+                if never_tried:
+                    import random
+                    textgrad_rec = random.choice(never_tried)
+                    log_debug(f"[FIX8-EXPLORE] ENV {env_id}: Using never-tried action '{textgrad_rec}'")
+                else:
+                    # Priority 2: Actions with count ≤2
+                    alternatives = [a for a in valid_actions if action_counts.get(a, 0) <= 2]
+                    if alternatives:
+                        import random
+                        textgrad_rec = random.choice(alternatives)
+                        log_debug(f"[FIX8-ALTERNATIVE] ENV {env_id}: Using '{textgrad_rec}' (used {action_counts.get(textgrad_rec, 0)} times)")
+                    else:
+                        # Priority 3: Random action to break deterministic cycle (no fallback to overused!)
+                        import random
+                        textgrad_rec = random.choice(valid_actions)
+                        log_debug(f"[FIX8-RANDOM] ENV {env_id}: All actions overused, using RANDOM '{textgrad_rec}' to break cycle (used {action_counts.get(textgrad_rec, 0)} times)")
+
+            # Check if Reflexion vetoes this action
+            is_vetoed = any(pattern in textgrad_rec.lower() for pattern in avoid_patterns)
+
+            if is_vetoed:
+                # Reflexion veto - find alternative
+                alternatives = [a for a in valid_actions if a != textgrad_rec]
+                if alternatives:
+                    selected_action = alternatives[0]
+                    synergy_outputs.append(selected_action)
+                    log_debug(f"[REFLEXION-VETO] ENV {env_id}: Blocked '{textgrad_rec}', using '{selected_action}'")
+                else:
+                    # All actions vetoed - use TextGrad anyway (rare edge case)
+                    synergy_outputs.append(textgrad_rec)
+                    log_debug(f"[REFLEXION-VETO] ENV {env_id}: All alternatives vetoed, using '{textgrad_rec}'")
+            else:
+                # Direct use of TextGrad recommendation
+                synergy_outputs.append(textgrad_rec)
+                log_debug(f"[TEXTGRAD-DIRECT] ENV {env_id}: ✓ Using '{textgrad_rec}'")
+
+        elif textgrad_rec and len(textgrad_rec) > 5:
+            # TextGrad provided recommendation but not exact match - fuzzy match
+            from difflib import get_close_matches
+            matches = get_close_matches(textgrad_rec, valid_actions, n=1, cutoff=0.75)
+
+            if matches:
+                selected_action = matches[0]
+                synergy_outputs.append(selected_action)
+                log_debug(f"[TEXTGRAD-FUZZY] ENV {env_id}: '{textgrad_rec}' → '{selected_action}'")
+            else:
+                # NO MATCH - This is a learning failure, expose it!
+                log_debug(f"[TEXTGRAD-FAIL] ENV {env_id}: '{textgrad_rec}' not in valid actions: {valid_actions[:3]}")
+                # Use first valid action and log the issue
+                synergy_outputs.append(valid_actions[0])
+                log_debug(f"[TEXTGRAD-FAIL] ENV {env_id}: Using fallback '{valid_actions[0]}' - TextGrad needs better syntax")
+
         else:
-            log_debug(f"[COMPREHENSIVE-PROMPT] ENV {env_id}: Using full reasoning (no prior step gradient)")
+            # No TextGrad guidance (step 0 or empty generation)
+            # Simple heuristic: match task verb to action verb
+            task = batch_data[i].get('task', '')
+            task_verb = task.split()[0].lower() if task else ""
+            matching = [a for a in valid_actions if a.split()[0].lower() == task_verb]
+
+            if matching:
+                synergy_outputs.append(matching[0])
+                log_debug(f"[STEP-0-HEURISTIC] ENV {env_id}: No TextGrad, using task verb match '{matching[0]}'")
+            else:
+                synergy_outputs.append(valid_actions[0])
+                log_debug(f"[STEP-0-HEURISTIC] ENV {env_id}: No TextGrad, using first action '{valid_actions[0]}'")
 
     # ALL environments use comprehensive prompt (true synergy)
     if need_llm:
@@ -2224,6 +2485,24 @@ def adaptive_env_interaction_batch(
         episode_id = str(uuid.uuid4())[:8]
         reflexion_memory_for_todo = memory if trial_idx > 0 else None
 
+        # META-LEARNING: Add cross_env_insights for failed envs (from successful envs)
+        cross_env_insights = env_configs[i].get('cross_env_insights', [])
+        if cross_env_insights and trial_idx > 0:
+            # Merge insights from successful envs into this failed env's memory
+            if reflexion_memory_for_todo is None:
+                reflexion_memory_for_todo = []
+            for insight in cross_env_insights:
+                if insight.get('content'):
+                    # Create a reflexion-format entry
+                    cross_env_reflection = {
+                        'type': 'cross_env_insight',
+                        'content': f"[From successful similar task] {insight['content']}",
+                        'from_success': True,
+                        'source_task_type': insight.get('task_type', 'unknown')
+                    }
+                    reflexion_memory_for_todo.append(cross_env_reflection)
+            print(f"[CROSS-ENV LEARNING] ENV {i}: Added {len(cross_env_insights)} insights from successful envs")
+
         # CROSS-ENVIRONMENT TODO LEARNING (NEW!)
         # Get similar successful TODOs from previous environments in THIS trial
         similar_todo_suggestions = []
@@ -2243,33 +2522,39 @@ def adaptive_env_interaction_batch(
                 log_debug(f"[TODO TRANSFER] ❌ No safe transfers found (tasks too different or failed safety checks)")
 
         # Initialize TODO for this environment (with retry logic built-in)
-        todo_manager = TaskTodoManager(model, fast_model)  # Reasoning for generation, fast for verification
+        # ABLATION: Skip TODO Manager if USE_TODO is False (pure ablation mode)
+        if USE_TODO:
+            todo_manager = TaskTodoManager(model, fast_model)  # Reasoning for generation, fast for verification
 
-        try:
-            initial_todos = todo_manager.initialize_from_task(
-                task,
-                ob,
-                initial_valid_actions,
-                trial_num=trial_idx,
-                reflexion_memory=reflexion_memory_for_todo,
-                similar_todo_suggestions=similar_todo_suggestions  # NEW: Cross-env learning!
-            )
-            log_debug(f"[ENV {i}] Trial {trial_idx}: Created {len(initial_todos)} TODO items")
-            if trial_idx > 0 and reflexion_memory_for_todo:
-                log_debug(f"[ENV {i}] TODO initialized with {len(reflexion_memory_for_todo)} reflexions")
-            if similar_todo_suggestions:
-                log_debug(f"[ENV {i}] TODO benefited from {len(similar_todo_suggestions)} cross-env suggestions")
+            try:
+                initial_todos = todo_manager.initialize_from_task(
+                    task,
+                    ob,
+                    initial_valid_actions,
+                    trial_num=trial_idx,
+                    reflexion_memory=reflexion_memory_for_todo,
+                    similar_todo_suggestions=similar_todo_suggestions  # NEW: Cross-env learning!
+                )
+                log_debug(f"[ENV {i}] Trial {trial_idx}: Created {len(initial_todos)} TODO items")
+                if trial_idx > 0 and reflexion_memory_for_todo:
+                    log_debug(f"[ENV {i}] TODO initialized with {len(reflexion_memory_for_todo)} reflexions")
+                if similar_todo_suggestions:
+                    log_debug(f"[ENV {i}] TODO benefited from {len(similar_todo_suggestions)} cross-env suggestions")
 
-            # Track successful TODO patterns for learning
-            if initial_todos:
-                successful_todo_patterns.append({
-                    'task': task,
-                    'todos': [t.content for t in initial_todos]
-                })
+                # Track successful TODO patterns for learning
+                if initial_todos:
+                    successful_todo_patterns.append({
+                        'task': task,
+                        'todos': [t.content for t in initial_todos]
+                    })
 
-        except Exception as e:
-            log_debug(f"[ENV {i}] TODO initialization FAILED: {e}")
-            raise
+            except Exception as e:
+                log_debug(f"[ENV {i}] TODO initialization FAILED: {e}")
+                raise
+        else:
+            # Pure ablation - no TODO Manager
+            todo_manager = None
+            log_debug(f"[ENV {i}] TODO Manager DISABLED (pure ablation mode)")
 
         env_data_list.append({
             'env': env,
@@ -2301,10 +2586,42 @@ def adaptive_env_interaction_batch(
 
     # Create final env_states WITHOUT env object (just env_id)
     for env_data in env_data_list:
+        # META-LEARNING: Check if this env should use direct replay (from Trial 0 optimization)
+        env_id = env_data['env_id']
+        use_direct_replay = env_configs[env_id].get('use_direct_replay', False) if trial_idx > 0 else False
+        optimal_sequence = env_configs[env_id].get('optimal_sequence', []) if use_direct_replay else []
+
+        # DEBUG: Log replay status for each env
+        print(f"  [REPLAY CHECK] ENV {env_id}: trial_idx={trial_idx}, use_direct_replay={use_direct_replay}, optimal_sequence_len={len(optimal_sequence)}")
+
+        if use_direct_replay:
+            # CRITICAL CHECK: Verify task matches between Trial 0 workflow and Trial 1 environment
+            saved_task = None
+            for mem in env_configs[env_id].get('memory', []):
+                if isinstance(mem, dict) and mem.get('type') == 'success_workflow':
+                    saved_task = mem.get('task', '')
+                    break
+            current_task = env_data['task']
+
+            if saved_task and saved_task != current_task:
+                print(f"  ⚠️  [TASK MISMATCH] ENV {env_id}: CANNOT REPLAY!")
+                print(f"      Saved task: '{saved_task}'")
+                print(f"      Current task: '{current_task}'")
+                print(f"      Disabling replay - environment changed between trials!")
+                use_direct_replay = False
+                optimal_sequence = []
+            else:
+                print(f"  [META-LEARNING] ENV {env_id}: Direct replay mode with {len(optimal_sequence)} optimized actions")
+                print(f"      Task: '{current_task}'")
+
         env_states.append({
             # 'env': env_data['env'],  # REMOVED - this caused 48,625x multiplier!
             'env_id': env_data['env_id'],
             'trial_idx': trial_idx,  # CRITICAL FIX: Track trial for compression
+            # META-LEARNING: Direct replay fields
+            'use_direct_replay': use_direct_replay,
+            'optimal_sequence': optimal_sequence,
+            'replay_step': 0,  # Track position in optimal_sequence
             'episode_id': env_data['episode_id'],
             'history': env_data['env_history'],
             'task': env_data['task'],
@@ -2334,11 +2651,13 @@ def adaptive_env_interaction_batch(
             'consolidated_step_wisdom': "",
             'todo_manager': env_data['todo_manager'],
             'working_reflexions': [],  # Will be populated below with quality-filtered reflexions
-            'reflexion_memory': env_data['memory'] if env_data['memory'] else [],  # CRITICAL FIX: Cross-trial Reflexion constraints for TextGrad context
+            'reflexion_memory': env_data['reflexion_memory'] if env_data['reflexion_memory'] else [],  # CRITICAL FIX: Cross-trial Reflexion constraints + cross_env_insights for failed envs
             # TEXTGRAD INTEGRATION: Add policy components to env_states
             'policy': env_data['policy'],        # TextGrad policy
             'loss_fn': env_data['loss_fn'],      # Loss function
-            'optimizer': env_data['optimizer']   # Optimizer
+            'optimizer': env_data['optimizer'],   # Optimizer
+            # FIX #32: Cumulative Search Memory - LLM-generated, persists across steps
+            'cumulative_search_memory': ""  # Accumulated search history string, grows each step
         })
 
         # PROFILING: Log working_reflexions loading with QUALITY SELECTION
@@ -2466,7 +2785,7 @@ def adaptive_env_interaction_batch(
 
     # Dynamic limit based on action space complexity
     # INCREASED: 21 → 28 to give agent more room for exploration and self-correction
-    max_steps = 28
+    max_steps = 55
 
     # ========================================================================
     # TRUE PARALLEL ENVIRONMENT PROCESSING (NO CONTAMINATION)
@@ -2516,6 +2835,51 @@ def adaptive_env_interaction_batch(
             # Skip if this env just finished
             if current_state['done'] or current_state['cur_step'] >= max_steps:
                 continue
+
+            # ═══════════════════════════════════════════════════════════════════
+            # META-LEARNING: Direct Replay Mode
+            # For envs that succeeded in Trial 0, replay optimized sequence
+            # ═══════════════════════════════════════════════════════════════════
+            if current_state.get('use_direct_replay', False):
+                optimal_seq = current_state.get('optimal_sequence', [])
+                replay_step = current_state.get('replay_step', 0)
+
+                if replay_step < len(optimal_seq):
+                    # Get next action from optimized sequence
+                    replay_action = optimal_seq[replay_step]
+                    print(f"  [REPLAY] ENV {current_env_idx}: Step {replay_step + 1}/{len(optimal_seq)} - '{replay_action}'")
+
+                    # Execute the replay action
+                    obs, reward, done, info = _env_registry[current_env_idx].step([replay_action])
+                    obs_text = obs[0] if obs else ""
+                    current_state['observation'] = obs_text
+                    current_state['cur_step'] += 1
+                    current_state['replay_step'] += 1
+                    current_state['trajectory'].append((replay_action, obs_text, reward))
+
+                    # DEBUG: Log what's happening during replay
+                    reward_val = reward[0] if isinstance(reward, (list, tuple)) else reward
+                    done_val = done[0] if isinstance(done, (list, tuple)) else done
+                    won_val = info.get('won', [False])[0] if 'won' in info else False
+                    print(f"    [REPLAY DEBUG] obs='{obs_text[:60]}...' reward={reward_val} done={done_val} won={won_val}")
+
+                    # Check for success - FIX: Handle reward as list
+                    if done_val:
+                        current_state['done'] = True
+                        current_state['success'] = reward_val > 0 and won_val
+                        if current_state['success']:
+                            print(f"  [REPLAY SUCCESS] ENV {current_env_idx}: Task completed in {replay_step + 1} steps!")
+                        else:
+                            # Replay failed - fall back to normal learning
+                            print(f"  [REPLAY FAILED] ENV {current_env_idx}: Switching to normal learning mode")
+                            current_state['use_direct_replay'] = False
+                    continue  # Skip LLM-based action selection
+
+                else:
+                    # Ran out of replay actions without success - switch to normal
+                    print(f"  [REPLAY EXHAUSTED] ENV {current_env_idx}: Switching to normal learning mode")
+                    current_state['use_direct_replay'] = False
+                    # Fall through to normal action selection
 
             # Get valid actions for current environment
             state = current_state  # Alias for code compatibility
@@ -2817,14 +3181,14 @@ def adaptive_env_interaction_batch(
                 'textgrad_components': state['prompt_generator'].prompt_components.copy(),  # Use env-specific
                 'reflexion_memory': state['memory'],
                 'working_reflexions': working_reflexions_text,
-                'action_history': state['trajectory'][-15:] if state['trajectory'] else [],
+                'action_history': [act for act, _, _ in state['trajectory'][-15:]] if state['trajectory'] else [],  # FIX #8 BUG: Extract actions from (action, obs, reasoning) tuples
                 'discovered_patterns': {},
                 'tried_actions': state.get('tried_actions', set()),
                 'interaction_count': state['cur_step'],
                 'memory_recommendations': recommendations,
                 'is_stuck': state.get('is_stuck', False),
                 'consolidated_step_wisdom': state.get('consolidated_step_wisdom', ''),
-                'step_insights_accumulator': state.get('step_insights_accumulator', [])[-5:],
+                'step_insights_accumulator': state.get('step_insights_accumulator', []),  # FIX #23: Keep ALL history, not just last 5
                 'progress_history': state.get('progress_history', []),
                 'todo_manager': state.get('todo_manager'),  # ADD TODO MANAGER
                 # ADD THESE NEW FIELDS
@@ -2848,16 +3212,65 @@ def adaptive_env_interaction_batch(
         print(f"[DATA COLLECTION] Collected data for {len(batch_data_all)} environments")
 
         # ========================================================================
-        # PHASE 3B: BATCH ACTION SELECTION
+        # PHASE 3B: ACTION SELECTION USING LEARNED TEXTGRAD POLICY
         # ========================================================================
-        print(f"\n[PHASE 3B] Selecting actions for {len(batch_data_all)} environments...")
-        selected_actions = reasoning_based_action_selection_batch(
-            batch_data=batch_data_all,
-            prompt_generator=prompt_generator,
-            DEBUG_ACTOR=DEBUG_ACTOR,
-            log_debug=log_debug
-        )
-        print(f"[PHASE 3B] ✓ Selected {len(selected_actions)} actions in ONE batch")
+        # FIX: Actually USE the learned TextGrad policy instead of 500-line prompt!
+        # The policy.forward() method uses:
+        # - Evolved base_policy (updated by optimizer every 3 steps)
+        # - Accumulated gradients (from textgrad_backward)
+        # - Reflexion insights (strategic constraints)
+        # - Recent actions (loop prevention)
+        print(f"\n[PHASE 3B] Selecting actions using LEARNED POLICY for {len(active_states_all)} environments...")
+
+        selected_actions = []
+        for state, batch_data in zip(active_states_all, batch_data_all):
+            policy = state['policy']
+
+            # Format working reflexions as insights for the policy
+            reflexion_insights = format_reflexion_insights_for_policy(
+                state.get('working_reflexions', [])
+            )
+
+            # Get recent actions for loop prevention (last 7 from trajectory)
+            recent_actions = []
+            if state.get('trajectory'):
+                recent_actions = [a for a, _, _ in state['trajectory'][-7:]]
+
+            # Get current TODO if available
+            current_todo = ""
+            if 'todo_manager' in state and state['todo_manager']:
+                current_todo_obj = state['todo_manager']._get_current_todo()
+                if current_todo_obj:
+                    current_todo = current_todo_obj.active_form
+
+            # Get valid_actions from batch_data (where it's stored), not from state
+            valid_actions = batch_data.get('valid_actions', [])[:30]
+
+            # Get next_action_guidance from PREVIOUS step's gradient (this is the CRITICAL fix!)
+            # This contains the specific recommended action from TextGrad analysis
+            last_step_gradient = batch_data.get('last_step_gradient', {})
+            next_action_guidance = last_step_gradient.get('next_action_guidance', '')
+
+            # DEBUG: Log guidance retrieval at every step
+            print(f"[DEBUG GUIDANCE] ENV {state['env_id']} Step {state['cur_step']}: last_step_gradient has {len(last_step_gradient)} keys")
+            if next_action_guidance:
+                print(f"[TEXTGRAD GUIDANCE] ENV {state['env_id']} Step {state['cur_step']}: Has recommendation: '{next_action_guidance[:80]}...'")
+
+            # USE THE LEARNED POLICY for action selection!
+            action = policy.forward(
+                state=state['prev_observation'][:500],  # Truncate to 500 chars
+                task=state['task'],
+                valid_actions=valid_actions,  # Limit to 30 actions from batch_data
+                inventory=state.get('inventory', []),
+                todo=current_todo,
+                reflexion_insights=reflexion_insights,
+                recent_actions=recent_actions,
+                next_action_guidance=next_action_guidance  # CRITICAL: Pass the specific recommended action!
+            )
+            selected_actions.append(action)
+            log_debug(f"[POLICY.FORWARD] ENV {state['env_id']}: Selected '{action}' using learned policy")
+
+        print(f"[PHASE 3B] ✓ Selected {len(selected_actions)} actions using LEARNED TEXTGRAD POLICY")
 
         # ========================================================================
         # PHASE 4: EXECUTE ALL ACTIONS, COLLECT RESULTS
@@ -2877,6 +3290,35 @@ def adaptive_env_interaction_batch(
             observation = env.process_observation(observation) if hasattr(env, 'process_observation') else (observation[0] if isinstance(observation, tuple) else observation)
             done = done[0]
 
+            # CRITICAL FIX: Mark environment as just completed for this step
+            # This flag will be checked BEFORE adding to action_results for gradient generation
+            # Prevents generating gradients for the step that just finished the episode
+            state['skip_gradient_this_step'] = done
+
+            # FIX #10: Set done flag IMMEDIATELY after env.step() returns done=True
+            # This prevents the infinite loop bug where completed envs stay 'active'
+            if done:
+                state['done'] = True
+                state['success'] = info.get('won', [False])[0]  # Also capture success status
+
+                # META-LEARNING FIX: Save success_workflow immediately when success detected
+                if state['success'] and state.get('trajectory'):
+                    # FIX: Include the WINNING action (current action) which hasn't been added to trajectory yet
+                    all_actions = [act for act, _, _ in state['trajectory']] + [action]
+                    success_workflow = {
+                        'type': 'success_workflow',
+                        'task': state['task'],
+                        'actions': all_actions,  # Now includes the winning action
+                        'episode_id': state.get('episode_id', f"trial{trial_idx}_env{state['env_id']}"),
+                        'trial': trial_idx,
+                        'steps': len(all_actions),  # Correct count including winning action
+                        'success_confirmed': True
+                    }
+                    if 'memory' not in env_configs[state['env_id']]:
+                        env_configs[state['env_id']]['memory'] = []
+                    env_configs[state['env_id']]['memory'].append(success_workflow)
+                    print(f"[SUCCESS WORKFLOW] Saved {len(all_actions)} actions for ENV {state['env_id']}: '{state['task']}'")
+
             # ============================================================================
             # TEXTGRAD INTEGRATION: Loss, Backward, Optimizer
             # ============================================================================
@@ -2885,13 +3327,29 @@ def adaptive_env_interaction_batch(
             optimizer = state.get('optimizer')
 
             if policy is not None and loss_fn is not None and optimizer is not None:
-                # Compute loss (textual criticism)
+                # Build trajectory context for loss function (so it can evaluate in context)
+                trajectory_context = []
+                for act, obs, _ in state.get('trajectory', []):
+                    trajectory_context.append({'action': act, 'observation': obs})
+
+                # Get current subtask from TODO manager for loss context
+                current_subtask = None
+                if 'todo_manager' in state and state['todo_manager']:
+                    current_subtask = state['todo_manager']._get_current_todo()
+
+                # Get Reflexion insights from episodic memory
+                reflexion_insights = state.get('memory', [])
+
+                # Compute GOAL-ALIGNED loss with trajectory, subtask, and Reflexion insights
                 loss_text = loss_fn(
                     action=action,
                     state_before=state['prev_observation'],
                     state_after=observation,
                     task=state['task'],
-                    policy=policy
+                    policy=policy,
+                    trajectory_context=trajectory_context,
+                    subtask=current_subtask,
+                    reflexion_insights=reflexion_insights
                 )
 
                 # Prepare comprehensive context for TextGrad backward pass
@@ -2943,7 +3401,16 @@ def adaptive_env_interaction_batch(
                     quick_progress = 'NO_PROGRESS'
                 elif 'you turn on' in observation.lower() or 'you take' in observation.lower():
                     quick_progress = 'PARTIAL_PROGRESS'
-                
+
+                # FIX #35: Populate failed_state_actions when NO_PROGRESS detected
+                # This enables the existing filter at line 2926 to work!
+                if quick_progress == 'NO_PROGRESS':
+                    prev_state_hash = hashlib.md5(state['prev_observation'][:200].encode()).hexdigest()[:8]
+                    if prev_state_hash not in state['failed_state_actions']:
+                        state['failed_state_actions'][prev_state_hash] = set()
+                    state['failed_state_actions'][prev_state_hash].add(action)
+                    print(f"[FIX #35] Action '{action}' marked as no-progress at state {prev_state_hash}")
+
                 # Add current step with quick progress assessment
                 state_action_obs_triples.append({
                     'state': state['prev_observation'][:150],
@@ -2956,7 +3423,7 @@ def adaptive_env_interaction_batch(
                     'task': state['task'],  # Will fail if missing - good!
                     'todo': todo_formatted,  # Can be empty string
                     'tried_actions': state['tried_actions'],  # Set of tried actions (for quick lookup)
-                    'state_action_obs_history': state_action_obs_triples[-10:],  # CRITICAL: State-action-observation triples for conditional learning
+                    'state_action_obs_history': state_action_obs_triples,  # FIX #36: ALL history, not just last 10 - LLM needs to see full pattern
                     'working_reflexions': state['working_reflexions'],  # Will fail if missing
                     'reflexion_memory': state['reflexion_memory'],  # Will fail if missing
                     'cur_step': state['cur_step'],  # Will fail if missing
@@ -2976,10 +3443,11 @@ def adaptive_env_interaction_batch(
                     print(f"[TEXTGRAD] ENV {state['env_id']} Step {step_num}: Policy updated with {len(policy.gradients)} gradients")
 
                 # Store gradient info in step_gradient for logging
+                # FIX #28: NO TRUNCATION - full gradient contains critical learning lessons!
                 if 'step_gradient' not in state:
                     state['step_gradient'] = {}
-                state['step_gradient']['textgrad_loss'] = loss_text[:200]  # Truncate
-                state['step_gradient']['textgrad_gradient'] = gradient[:200]
+                state['step_gradient']['textgrad_loss'] = loss_text  # FIX #28: Full loss for learning
+                state['step_gradient']['textgrad_gradient'] = gradient  # FIX #28: Full gradient - critical!
                 state['step_gradient']['policy_version'] = len(policy.update_history)
             # ============================================================================
             # END TEXTGRAD INTEGRATION
@@ -3006,7 +3474,8 @@ def adaptive_env_interaction_batch(
                 is_key_moment = True
                 moment_type = "MILESTONE"
 
-            if is_key_moment:
+            # ABLATION: Only generate reflexions if USE_REFLEXION is True
+            if is_key_moment and USE_REFLEXION:
                 # Skip early milestones - not enough context
                 skip_reflexion = (moment_type == "MILESTONE" and state['cur_step'] < 5)
 
@@ -3104,7 +3573,6 @@ Reflect on your progress so far:
 
 Provide a concise reflection mentioning a specific action from the list (2-3 sentences):"""
 
-                        from vllm import SamplingParams
                         sampling_params = SamplingParams(temperature=0.3, max_tokens=200)  # Lower temp for precision
                         step_reflection_output = model.generate([reflexion_prompt], sampling_params)[0]
                         step_reflection = step_reflection_output.outputs[0].text.strip()
@@ -3209,10 +3677,12 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
             if 'todo_manager' in state and state['todo_manager']:
                 explored_locations_dict = state['todo_manager'].visited_locations
 
-            # CRITICAL FIX: Skip gradient generation for environments that just completed
-            # This fixes the bug where successful episodes generated gradients after done=True
-            if state['done']:
-                log_debug(f"[ENV {state['env_id']}] Skipping gradient generation - episode complete (done=True)")
+            # CRITICAL FIX: Skip gradient generation for environments that just completed THIS STEP
+            # The flag 'skip_gradient_this_step' is set immediately after env.step() returns done=True
+            # This prevents generating a gradient for the final action that completed the episode
+            if state.get('skip_gradient_this_step', False):
+                log_debug(f"[ENV {state['env_id']}] Skipping gradient generation - episode just completed (done=True)")
+                state['skip_gradient_this_step'] = False  # Reset flag for next iteration
                 continue  # Skip to next environment, don't add to action_results
 
             # Collect ALL data for gradient generation (DON'T generate yet!)
@@ -3263,7 +3733,8 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
             # SIMPLIFIED SCHEDULE: Fixed Reflexion cadence every 5 steps
             # Reflexion has complete history and can detect loops/patterns
             # This eliminates buggy progress-based heuristics that masked loops
-            use_reflexion = (current_step % 5 == 0)
+            # ABLATION: Only schedule if USE_REFLEXION is True
+            use_reflexion = USE_REFLEXION and (current_step % 5 == 0)
 
             log_debug(f"[SCHEDULE] ENV {state['env_id']} Step {current_step}: Reflexion={'YES' if use_reflexion else 'NO'} (fixed schedule: every 5 steps)")
 
@@ -3278,7 +3749,6 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
         # Generate Reflexion strategic insights in batch (if any needed)
         if len(reflexion_prompts) > 0:
             print(f"[PHASE 5 - PASS 1] Generating {len(reflexion_prompts)} Reflexion strategic insights in batch...")
-            from vllm import SamplingParams
             reflexion_sampling_params = SamplingParams(
                 max_tokens=7000,
                 temperature=0.3,
@@ -3323,10 +3793,39 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
             print(f"[PHASE 5 - PASS 1] No environments need Reflexion (all making good progress)")
 
         # PASS 2: Generate TextGrad actions for ALL environments (now with updated Reflexion insights)
+        # ABLATION NOTE: Even in reflexion_only mode, we generate actions using TextGrad prompt structure
+        # but the gradient history will be empty (since USE_TEXTGRAD=False disables gradient accumulation)
         print(f"[PHASE 5 - PASS 2] Generating TextGrad actions for ALL {len(action_results)} environments...")
         textgrad_prompts = []
 
         for result in action_results:
+            # ═══════════════════════════════════════════════════════════════
+            # FIX #14: Update TODO BEFORE generating TextGrad prompt (ONE-STEP LAG FIX)
+            # ═══════════════════════════════════════════════════════════════
+            # ROOT CAUSE: Previously TODO was updated in PHASE 6 AFTER TextGrad generation
+            # PROBLEM: TextGrad used OLD TODO state when recommending next actions
+            #   Example: Agent takes pan → TextGrad recommends "go to countertop" with OLD TODO="Pick up pan"
+            #            But TODO should have advanced to "Cool the pan" → Agent skips cooling step!
+            # FIX: Update TODO HERE so TextGrad sees CURRENT TODO state
+            state = result['state']
+            if 'todo_manager' in state and state['todo_manager']:
+                try:
+                    # Update TODO with current action result (use 'EXPLORING' as default)
+                    # The LLM verification in _check_todo_completion doesn't depend on progress_status
+                    state['todo_manager'].update_from_action_feedback(
+                        action=result['action'],
+                        prev_observation=result['prev_observation'],
+                        curr_observation=result['observation'],
+                        progress_status='EXPLORING'  # Default - LLM verification determines completion
+                    )
+                    # CRITICAL: Refresh current_todo in result dict with UPDATED value!
+                    result['current_todo'] = state['todo_manager']._get_current_todo()
+                    result['todo_updated_in_phase5'] = True  # Mark to skip duplicate update in PHASE 6
+                    log_debug(f"[FIX #14] ENV {state['env_id']}: TODO updated BEFORE TextGrad. Current TODO: {result['current_todo'].content if result['current_todo'] else 'ALL COMPLETED'}")
+                except Exception as e:
+                    log_debug(f"[FIX #14 ERROR] ENV {state['env_id']}: {e}")
+            # ═══════════════════════════════════════════════════════════════
+
             # ALWAYS use TextGrad to generate actions (TRUE SYNERGY!)
             # But TextGrad now has Reflexion strategic insights in context (via previous_reflexions)
             textgrad_prompt = generate_textgrad_gradient_prompt(
@@ -3335,17 +3834,17 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
                 result['episodic_memory_only'],  # FIX: Use correct key name!
                 result['initial_observation'],
                 result['explored_locations'],
-                result['next_valid_actions']  # FIX: Use correct key name!
+                result['next_valid_actions'],  # FIX: Use correct key name!
+                result['state'].get('cumulative_search_memory', '')  # FIX #32: Cumulative search memory
             )
             textgrad_prompts.append(textgrad_prompt)
 
         # Batch generate ALL TextGrad actions
         print(f"[PHASE 5 - PASS 2] Calling model.generate() with {len(textgrad_prompts)} TextGrad prompts in ONE batch...")
-        from vllm import SamplingParams
         textgrad_sampling_params = SamplingParams(
             max_tokens=7000,
             temperature=0.3,
-            stop=["TASK:", "BEFORE:"],
+            stop=[],  # FIX (Nov 22): Removed aggressive stop sequences that truncated answers mid-generation
             skip_special_tokens=True
         )
         gradient_outputs = model.generate(textgrad_prompts, textgrad_sampling_params, reasoning_effort='medium')
@@ -3400,6 +3899,17 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
             else:
                 step_gradient['guidance_source'] = 'textgrad'
 
+            # FIX #32: Update cumulative search memory with new entry
+            new_entry = step_gradient.get('new_search_entry', '')
+            if new_entry and new_entry.lower() not in ['none', 'n/a', '']:
+                state = result['state']
+                current_memory = state.get('cumulative_search_memory', '')
+                if current_memory:
+                    state['cumulative_search_memory'] = f"{current_memory} | {new_entry}"
+                else:
+                    state['cumulative_search_memory'] = new_entry
+                log_debug(f"[FIX #32] ENV {state['env_id']}: Search memory updated: {new_entry}")
+
             step_gradients.append(step_gradient)
         print(f"[PHASE 5] ✓ Parsed {len(step_gradients)} gradients (TRUE SYNERGY: TextGrad generates 100% of actions)")
 
@@ -3423,13 +3933,28 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
             reward = result['reward']
             info = result['info']
 
+            # ═══════════════════════════════════════════════════════════════════════
+            # FIX #15 (Part 2): Merge backward gradient from PHASE 4 into step_gradient
+            # PHASE 4 stores backward gradient in state['step_gradient']['textgrad_gradient']
+            # But step_gradient here comes from parse_step_gradient_response() (different dict!)
+            # This merge ensures backward gradient flows to step_insights_accumulator
+            # ═══════════════════════════════════════════════════════════════════════
+            if 'step_gradient' in state and state['step_gradient']:
+                textgrad_gradient = state['step_gradient'].get('textgrad_gradient', '')
+                if textgrad_gradient:
+                    step_gradient['textgrad_gradient'] = textgrad_gradient
+                    log_debug(f"[FIX #15] ENV {state['env_id']}: Merged backward gradient: {textgrad_gradient[:80]}...")
+
             # MEMORY LEAK DEBUG: Check memory growth per iteration
             if idx > 0 and idx % 5 == 0:
                 memory_current = process.memory_info().rss / 1024 / 1024 / 1024  # GB
                 print(f"[MEMORY LEAK] Step {idx}: {memory_current:.2f} GB (delta: +{(memory_current - memory_before):.2f} GB)")
 
             # 1. UPDATE TODO MANAGER (lines 2378-2388)
-            if 'todo_manager' in state and state['todo_manager']:
+            # FIX #14: Skip if already updated in PHASE 5 (to avoid double-incrementing attempts)
+            if result.get('todo_updated_in_phase5', False):
+                log_debug(f"[FIX #14] ENV {state['env_id']}: Skipping TODO update in PHASE 6 (already done in PHASE 5)")
+            elif 'todo_manager' in state and state['todo_manager']:
                 try:
                     state['todo_manager'].update_from_action_feedback(
                         action=action,
@@ -3519,16 +4044,23 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
                     f.write(f"  Progress score: {step_gradient.get('progress_score', 0)}\n")
 
             # 7. ACCUMULATE INSIGHTS (lines 2485-2558)
+            # FIX #13: Include OBSERVATION so forward pass knows what was found at each location!
+            # FIX #15: Include BACKWARD GRADIENT so TextGrad prompt sees correct feedback!
+            # FIX #28: NO TRUNCATION - full observation and gradient needed for learning!
             progress_score = step_gradient.get('progress_score', 0)
             state['step_insights_accumulator'].append({
                 'step': state['cur_step'],
                 'action': action,
+                'observation': observation,  # FIX #28: Full observation for learning
                 'hypothesis': step_gradient.get('hypothesis', ''),
+                'backward_gradient': step_gradient.get('textgrad_gradient', ''),  # FIX #28: Now full gradient!
                 'progress_score': progress_score,
                 'state_changed': step_gradient.get('state_change', '') != 'NO CHANGE',
                 'next_guidance': step_gradient.get('next_action_guidance', ''),
                 'missing_prereqs': step_gradient.get('prerequisites', {}).get('missing', [])
             })
+            # DEBUG: Verify insight accumulation
+            print(f"[FIX #15 DEBUG] ENV {state['env_id']} Step {state['cur_step']}: Accumulated insight. Total insights: {len(state['step_insights_accumulator'])}")
 
             # Synthesize insights every 3 steps
             if len(state['step_insights_accumulator']) >= 3 and state['cur_step'] % 3 == 0:
@@ -3631,7 +4163,9 @@ Provide a concise reflection mentioning a specific action from the list (2-3 sen
             # 12a. SYNERGISTIC STEP REFLEXION (Reflexion for episodic memory)
             # Generate reflexions ONLY for failures or key milestones to feed episodic memory
             # TextGrad handles real-time action optimization, Reflexion handles learning from experience
-            if is_failure or state['cur_step'] % 5 == 0 or 'you win' in observation.lower():
+            # FIX #6 (Nov 23): Don't generate reflexion for completed environments (prevents infinite loop)
+            # ABLATION: Only generate if USE_REFLEXION is True
+            if USE_REFLEXION and not done and (is_failure or state['cur_step'] % 5 == 0 or 'you win' in observation.lower()):
                 try:
                     # Initialize working_reflexions if not exists
                     if 'working_reflexions' not in state:
@@ -4130,7 +4664,6 @@ CRITICAL: Only reference actions from the list above.
 Provide a concise (1 sentence) episodic memory insight:"""
 
                     # Generate episodic reflexion using the model
-                    from vllm import SamplingParams
                     sampling_params = SamplingParams(temperature=0.7, max_tokens=150)  # Restored for exploration
                     step_reflection_output = model.generate([reflexion_prompt], sampling_params)[0]
                     step_reflection = step_reflection_output.outputs[0].text.strip()
@@ -4291,7 +4824,8 @@ Provide a concise (1 sentence) episodic memory insight:"""
                     current_todo=current_todo,
                     inventory=inventory_items,
                     previous_reflexions=tiered_step_reflexions,
-                    episodic_memory=episodic_memory_only
+                    episodic_memory=episodic_memory_only,
+                    step_insights=state.get('step_insights_accumulator', [])  # FIX #21: Pass raw observations
                 )
             else:
                 # REFLEXION PATH (<15% of steps): Deep causal analysis for failures
@@ -4309,7 +4843,8 @@ Provide a concise (1 sentence) episodic memory insight:"""
                     current_todo=current_todo,
                     inventory=inventory_items,
                     previous_reflexions=tiered_step_reflexions,
-                    episodic_memory=episodic_memory_only
+                    episodic_memory=episodic_memory_only,
+                    step_insights=state.get('step_insights_accumulator', [])  # FIX #21: Pass raw observations
                 )
 
             # UPDATE TODO MANAGER with action feedback
@@ -4422,13 +4957,17 @@ Provide a concise (1 sentence) episodic memory insight:"""
                     f.write(f"  Progress score: {step_gradient.get('progress_score', 0)}\n")
 
             # ACCUMULATE AND SYNTHESIZE STEP INSIGHTS
+            # FIX #13: Include OBSERVATION so forward pass knows what was found!
+            # FIX #28: NO TRUNCATION - full observation and gradient needed for learning!
             progress_score = step_gradient.get('progress_score', 0)
 
             # Always accumulate, not just on progress
             state['step_insights_accumulator'].append({
                 'step': state['cur_step'],
                 'action': action,
+                'observation': observation,  # FIX #28: Full observation for learning
                 'hypothesis': step_gradient.get('hypothesis', ''),
+                'backward_gradient': step_gradient.get('textgrad_gradient', ''),  # FIX #28: Now full gradient!
                 'progress_score': progress_score,
                 'state_changed': step_gradient.get('state_change', '') != 'NO CHANGE',
                 'next_guidance': step_gradient.get('next_action_guidance', ''),
@@ -5519,6 +6058,8 @@ DEBUG_REFLEXION = False  # Will be set by main.py
 # Ablation study flags - default to full system (combined mode)
 USE_REFLEXION = True  # Enable episodic memory and reflection generation
 USE_TEXTGRAD = True   # Enable prompt optimization via textual gradients
+USE_TODO = True       # Enable TODO Manager for task decomposition
+PURE_ABLATION = False # Pure ablation mode - no pre-learned patterns
 
 # Set the flags in dynamic_prompting
 set_debug_flags(DEBUG_ACTOR, DEBUG_CRITIC)
@@ -5582,6 +6123,9 @@ def get_environment(env_type, config=None, env_id=None):
         return ScienceWorldWrapper(task_name="melt", env_id=env_id)
     elif env_type == "scienceworld_grow":
         return ScienceWorldWrapper(task_name="grow-plant", env_id=env_id)
+    elif env_type == "scienceworld_all":
+        # Cycles through all 20 task types based on env_id
+        return ScienceWorldWrapper(task_name=None, env_id=env_id)
     
     # BabyAI levels
     elif env_type == "babyai_goto":
@@ -5590,7 +6134,15 @@ def get_environment(env_type, config=None, env_id=None):
         return BabyAIWrapper(level="BabyAI-PickupLoc-v0", env_id=env_id)
     elif env_type == "babyai_unlock":
         return BabyAIWrapper(level="BabyAI-UnlockLocal-v0", env_id=env_id)
-    
+
+    # AppWorld benchmark
+    elif env_type == "appworld" or env_type.startswith("appworld_"):
+        # Extract task_id if provided (e.g., appworld_123)
+        task_id = None
+        if "_" in env_type and env_type != "appworld":
+            task_id = env_type.split("_", 1)[1]
+        return AppWorldWrapper(task_id=task_id, env_id=env_id)
+
     else:
         raise ValueError(f"Unknown environment type: {env_type}")
 
@@ -5701,12 +6253,17 @@ def build_step_gradient_prompt_from_data(result: Dict, log_debug=print) -> str:
     # Loop detection removed - no repetition warning needed
     repetition_warning = ""
 
-    # Build TODO context for tactical coordination
+    # Build TODO context with EXPLICIT observation comparison (FIX #22 - Universal)
     todo_context = ""
     if current_todo:
         todo_context = f"""
 📋 CURRENT SUBTASK: {current_todo.content}
-   (This is what we're trying to accomplish RIGHT NOW)
+
+🔍 EXPLICIT TODO CHECK (Answer honestly):
+   - TODO requires: "{current_todo.content}"
+   - Last observation: "{curr_observation[:150] if curr_observation else 'N/A'}"
+   - QUESTION: Does this observation indicate the TODO was achieved?
+   - If NO: You must try a DIFFERENT action/approach.
 """
 
     # Build inventory context (CRITICAL for avoiding loops)
@@ -5793,23 +6350,25 @@ def build_step_gradient_prompt_from_data(result: Dict, log_debug=print) -> str:
    Don't waste steps re-examining locations you've already checked!
 """
 
-    # Build TextGrad's previous recommendations context (CRITICAL for avoiding cycles)
+    # FIX #21: Build TextGrad's history from RAW OBSERVATIONS ONLY
+    # ROOT CAUSE: LLM interpretations (guidance, progress) compound errors
+    # SOLUTION: Show only raw action + raw environment feedback
+    # FIX #25: Use 15 steps for consistency (Reflexion analyzes raw data to generate lessons)
     textgrad_history_context = ""
     step_insights = result.get('step_insights_accumulator', [])
     log_debug(f"[TEXTGRAD DEBUG] step_insights has {len(step_insights)} items")
     if step_insights and len(step_insights) > 0:
-        recent_gradients = step_insights[-5:]  # Last 5 TextGrad recommendations
-        log_debug(f"[TEXTGRAD DEBUG] Building history context with {len(recent_gradients)} recent gradients")
-        textgrad_history_context = "\n🎯 YOUR PREVIOUS TEXTGRAD RECOMMENDATIONS (Avoid Cycling!):\n"
+        recent_gradients = step_insights  # FIX #36: ALL steps so LLM sees complete history
+        log_debug(f"[TEXTGRAD DEBUG] Building RAW history context with {len(recent_gradients)} steps")
+        textgrad_history_context = "\n🎯 RAW ACTION HISTORY (Interpret fresh - do NOT trust prior interpretations):\n"
         for insight in recent_gradients:
             action_taken = insight.get('action', 'Unknown')
-            guidance = insight.get('next_guidance', 'None')
-            progress = insight.get('progress_score', 0)
-            textgrad_history_context += f"  Step {insight.get('step', '?')}: Action '{action_taken}' → Recommended '{guidance}' (progress: {progress}/10)\n"
-            log_debug(f"[TEXTGRAD DEBUG] Added: Step {insight.get('step')} action='{action_taken}' guidance='{guidance}'")
-        textgrad_history_context += "\n  ⚠️ CRITICAL TEXTGRAD MEMORY: If you're about to recommend an action you already suggested,\n"
-        textgrad_history_context += "  that means you're CYCLING! Try a COMPLETELY DIFFERENT approach instead!\n"
-        textgrad_history_context += "  (This is textual gradient descent - use your own gradient history to avoid local minima)\n"
+            observation = insight.get('observation', '')  # RAW environment feedback ONLY
+            # FIX #21: Removed 'guidance' and 'progress' - these are LLM interpretations that compound errors
+            textgrad_history_context += f"  Step {insight.get('step', '?')}: ACTION: \"{action_taken}\" → ENV FEEDBACK: \"{observation}\"\n"
+            log_debug(f"[TEXTGRAD DEBUG] Added RAW: Step {insight.get('step')} action='{action_taken}' obs='{observation[:50] if observation else 'NONE'}'")
+        textgrad_history_context += "\n  ⚠️ CRITICAL: Interpret the raw feedback above FRESH. If 'clean' was done but task needs 'cool',\n"
+        textgrad_history_context += "  recognize that clean≠cool. Environment feedback tells you EXACTLY what happened.\n"
         log_debug(f"[TEXTGRAD DEBUG] textgrad_history_context length: {len(textgrad_history_context)} chars")
     else:
         log_debug(f"[TEXTGRAD DEBUG] No step_insights, textgrad_history_context is EMPTY")
@@ -5959,20 +6518,32 @@ Answer format: Provide your analysis after each numbered question."""
 
     # Smart trigger: Only use Reflexion when TRULY stuck
     # Requirements:
-    # 1. Not step 0 (TODO provides initial guidance)
-    # 2. 5+ consecutive low-progress steps (not just transient failure)
-    # 3. 5+ steps since last Reflexion (cooldown to let TextGrad establish gradient)
+    # 1. USE_REFLEXION flag is True (ablation mode check)
+    # 2. Not step 0 (TODO provides initial guidance)
+    # 3. 5+ consecutive low-progress steps (not just transient failure)
+    # 4. 5+ steps since last Reflexion (cooldown to let TextGrad establish gradient)
     use_reflexion = (
+        USE_REFLEXION and  # ABLATION: Check global flag first
         current_step_num > 0 and
         state['consecutive_low_progress'] >= 5 and
         state['steps_since_reflexion'] >= 5
     )
 
+    # ABLATION: If TextGrad is disabled, always use Reflexion path (if enabled)
+    if not USE_TEXTGRAD and USE_REFLEXION:
+        use_reflexion = True
+
+    # ABLATION: If both disabled, return empty (shouldn't happen in normal use)
+    if not USE_TEXTGRAD and not USE_REFLEXION:
+        log_debug(f"[ABLATION WARNING] Both TextGrad and Reflexion disabled!")
+        return ('none', '')
+
     if not use_reflexion:
         # TEXTGRAD PATH (85%+ of steps): Good progress → keep optimizing
         log_debug(f"[PHASE2-PARALLEL] ENV {result.get('env_id', '?')} Step {current_step}: Using TEXTGRAD (last_progress={last_progress}/10)")
         prompt = generate_textgrad_gradient_prompt(result, previous_reflexions, episodic_memory,
-                                                     initial_observation, explored_locations, valid_actions)
+                                                     initial_observation, explored_locations, valid_actions,
+                                                     state.get('cumulative_search_memory', ''))  # FIX #32
         return ('textgrad', prompt)  # Return tuple with type for metadata tracking
     else:
         # REFLEXION PATH (<15% of steps): Low progress → diagnose why
@@ -5987,7 +6558,7 @@ Answer format: Provide your analysis after each numbered question."""
 
 def generate_textgrad_gradient_prompt(result: Dict, previous_reflexions: list, episodic_memory: list,
                                       initial_observation: str, explored_locations: dict,
-                                      valid_actions: list) -> str:
+                                      valid_actions: list, cumulative_search_memory: str = "") -> str:
     """Generate TextGrad prompt for automatic differentiation via text.
 
     TextGrad's role (Nature 2024): Optimize actions through textual gradients
@@ -6015,17 +6586,101 @@ def generate_textgrad_gradient_prompt(result: Dict, previous_reflexions: list, e
         inventory_context = f"\n🎒 INVENTORY: Currently holding {items_str}\n   ⚠️ CRITICAL: Use held items for task completion!\n"
 
     # Build gradient history (last 5 steps for backpropagation)
+    # FIX #4 (Nov 22): PURE TEXTUAL HISTORY - No scores, no truncation!
+    # FIX #13: Include OBSERVATION so agent knows what was found at each location!
+    # FIX #25: Use last 15 steps with FULL backward lessons (no truncation)
+    # This gives the LLM enough history to learn from past mistakes
+    # NOTE: Full history is still kept in state (line 3178) for exploration tracking (FIX #16A)
     gradient_history = ""
     step_insights = result.get('step_insights_accumulator', [])
+    print(f"[FIX #25] step_insights count: {len(step_insights)} (using last 15 for prompt with FULL lessons)")
     if step_insights and len(step_insights) > 0:
-        recent_gradients = step_insights[-5:]
-        gradient_history = "\n📊 ACCUMULATED GRADIENTS (Your optimization history):\n"
-        for insight in recent_gradients:
-            act = insight.get('action', 'Unknown')[:30]
-            guide = insight.get('next_guidance', 'None')[:50]
-            score = insight.get('progress_score', 0)
-            gradient_history += f"  Step {insight.get('step', '?')}: {act} → Score:{score}/10 → Gradient:'{guide}'\n"
-        gradient_history += "  ⚠️ Use gradient descent: If similar actions yielded low scores, try DIFFERENT direction!\n"
+        # FIX #25: Use last 15 steps with FULL backward gradient lessons
+        # This ensures the agent learns from past mistakes and doesn't repeat them
+        all_insights = step_insights  # FIX #36: ALL steps with FULL lessons!
+        gradient_history = "\n📊 COMPLETE ACTION HISTORY WITH LESSONS:\n"
+        gradient_history += "   ⚠️ CRITICAL: Read the LESSON for each step - it tells you what was WRONG!\n\n"
+
+        for insight in all_insights:
+            step = insight.get('step', '?')
+            act = insight.get('action', 'Unknown')
+            obs = insight.get('observation', '')  # FIX #13: What was actually found!
+            full_reasoning = insight.get('hypothesis', '')
+            print(f"[TEXTGRAD PROMPT DEBUG] Step {step}: obs='{obs[:80] if obs else 'MISSING!'}'")
+
+            gradient_history += f"  Step {step}: {act}\n"
+            if obs:
+                gradient_history += f"    → {obs}\n"  # FULL observation, no truncation!
+            if full_reasoning:
+                gradient_history += f"  Your reasoning: {full_reasoning}\n"
+            # FIX #15: Show BACKWARD GRADIENT feedback (loss analysis)
+            backward_feedback = insight.get('backward_gradient', '')
+            print(f"[FIX #15 DEBUG] Step {step}: backward_feedback present: {bool(backward_feedback)}, value[:50]: '{backward_feedback[:50] if backward_feedback else 'EMPTY'}'")
+            # FIX #16C: DON'T truncate backward gradient - it contains critical "what to do instead" info!
+            if backward_feedback:
+                gradient_history += f"  ⚠️ LOSS FEEDBACK: {backward_feedback}\n"  # Full feedback!
+        gradient_history += "\n  ⚠️ CRITICAL: Review RESULTS and LOSS FEEDBACK above before recommending actions!\n"
+        gradient_history += "  - If LOSS FEEDBACK says an action was 'suboptimal' or 'wrong', DON'T recommend it again!\n"
+        gradient_history += "  - If a location showed 'nothing' or 'empty', DON'T go back there!\n"
+        gradient_history += "  - If an action made NO_PROGRESS, try a DIFFERENT approach\n"
+        gradient_history += "  - Learn from LOSS FEEDBACK - it shows what actually went wrong!\n"
+        print(f"[TEXTGRAD PROMPT DEBUG] gradient_history length: {len(gradient_history)} chars")
+    else:
+        print(f"[TEXTGRAD PROMPT DEBUG] NO step_insights! gradient_history will be EMPTY!")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # FIX #16A: Add EXPLORED vs UNEXPLORED locations - critical for breaking loops!
+    # ═══════════════════════════════════════════════════════════════════════════
+    exploration_context = ""
+    if explored_locations and len(explored_locations) > 0:
+        # Handle both dict formats: {loc: count} or {loc: [timestamps]}
+        explored_list = []
+        for loc, count_or_list in explored_locations.items():
+            if isinstance(count_or_list, list):
+                visit_count = len(count_or_list)  # List of timestamps
+            else:
+                visit_count = count_or_list  # Direct count
+            if visit_count > 0:
+                explored_list.append(f"{loc} (visited {visit_count}x)")
+
+        exploration_context = "\n🗺️ EXPLORATION STATUS:\n"
+        exploration_context += f"  ✅ EXPLORED: {', '.join(explored_list[:10])}\n"  # Show top 10
+
+        # Extract location types from valid_actions to suggest unexplored areas
+        if valid_actions:
+            all_go_actions = [a for a in valid_actions if a.startswith('go to ')]
+            all_locations = [a.replace('go to ', '') for a in all_go_actions]
+            # Handle both dict formats for unexplored check
+            def is_unexplored(loc):
+                if loc not in explored_locations:
+                    return True
+                val = explored_locations.get(loc, 0)
+                return (isinstance(val, list) and len(val) == 0) or (not isinstance(val, list) and val == 0)
+            unexplored = [loc for loc in all_locations if is_unexplored(loc)]
+            if unexplored:
+                exploration_context += f"  ❓ UNEXPLORED: {', '.join(unexplored[:10])}\n"
+                exploration_context += "  ⚠️ CRITICAL: If current approach is FAILING, try an UNEXPLORED location!\n"
+                print(f"[FIX #16A DEBUG] UNEXPLORED locations: {unexplored[:5]}")
+            else:
+                print(f"[FIX #16A DEBUG] No unexplored locations found! all_locations={len(all_locations)}")
+        print(f"[FIX #16A DEBUG] Exploration context added: {len(explored_locations)} explored, {len(unexplored) if 'unexplored' in dir() else 0} unexplored")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # FIX #16B: Detect action repetition loops and warn strongly
+    # ═══════════════════════════════════════════════════════════════════════════
+    loop_warning = ""
+    if step_insights and len(step_insights) >= 3:
+        from collections import Counter
+        recent_actions = [ins.get('action', '') for ins in step_insights[-10:]]
+        action_counts = Counter(recent_actions)
+        repeated_actions = [(act, cnt) for act, cnt in action_counts.items() if cnt >= 3]
+        if repeated_actions:
+            loop_warning = "\n🔄 ⚠️ LOOP DETECTED - ACTION REPETITION:\n"
+            for act, cnt in repeated_actions:
+                loop_warning += f"  ❌ '{act}' repeated {cnt} times WITHOUT SUCCESS!\n"
+            loop_warning += "  🚨 CRITICAL: These actions have FAILED repeatedly. DO NOT recommend them again!\n"
+            loop_warning += "  💡 TRY: A completely DIFFERENT action or explore an UNEXPLORED location!\n"
+            print(f"[FIX #16B DEBUG] Loop warning triggered: {repeated_actions}")
 
     # Build REFLEXION STRATEGIC INSIGHTS (step-level guidance from recent Reflexion analysis)
     reflexion_insights = ""
@@ -6064,7 +6719,7 @@ YOUR ROLE (TextGrad's Unique Strength - Nature 2024):
 - DO NOT do causal analysis (Reflexion's job) - focus on optimization
 
 TASK: {task}
-{todo_context}{inventory_context}{reflexion_insights}{episodic_constraints}{gradient_history}
+{todo_context}{inventory_context}{exploration_context}{loop_warning}{reflexion_insights}{episodic_constraints}{gradient_history}
 BEFORE: {prev_observation}
 ACTION TAKEN: {action}
 AFTER: {curr_observation}
@@ -6106,7 +6761,25 @@ TEXTGRAD GRADIENT COMPUTATION (Answer each precisely):
 
    Answer: FAILED_ACTIONS: [list actions Reflexion said failed, or "none diagnosed"]
 
-4. STRATEGIC CONSTRAINT CHECK:
+4. SEARCH MEMORY (Cumulative - DO NOT RE-SEARCH THESE):
+   {f'ACCUMULATED SEARCH HISTORY (from previous steps): {cumulative_search_memory}' if cumulative_search_memory else 'No locations searched yet.'}
+
+   TARGET_OBJECT_NEEDED: Parse the TASK "{task}" - what object type(s) must you find?
+
+   UPDATE SEARCH MEMORY with THIS step's action:
+   - If you just visited/opened a new location, ADD it to the list above
+   - Format: [location] → [objects found, or "empty/nothing relevant"]
+   - DO NOT repeat locations already listed above
+
+   Answer:
+   TARGET_NEEDED: [object type from task]
+   NEW_SEARCH_ENTRY: [location → objects] (or "none" if action wasn't a search)
+
+   ⚠️ RE-SEARCH PREVENTION:
+   NEVER recommend going back to a location from ACCUMULATED SEARCH HISTORY that didn't have TARGET_NEEDED.
+   Those locations were already searched and confirmed empty of the target.
+
+5. STRATEGIC CONSTRAINT CHECK:
    {f'My episodic memory warns: {episodic_constraints}' if episodic_constraints else 'No strategic constraints'}
 
    Before recommending an action, verify:
@@ -6116,28 +6789,56 @@ TEXTGRAD GRADIENT COMPUTATION (Answer each precisely):
    Answer: CONSTRAINT CHECK: [Pass/Fail] | IF FAIL: [alternative action]
 
 5. NEXT ACTION OPTIMIZATION:
-   Based on:
+
+   ★★★ HIGHEST PRIORITY: DISCOVERED OBJECTS ★★★
+   FIRST, check the CURRENT OBSERVATION for objects mentioned in the TASK.
+   If you see an object type from the task (and you don't already have it):
+   → Your ONLY action should be to INTERACT with it (acquire, take, pick up)
+   → This OVERRIDES gradient history, TODOs, and all other guidance
+   → Objects found ANYWHERE are likely the ones needed for the task
+   → Don't leave discovered task-objects behind to search elsewhere
+
+   If no task-objects are visible, THEN consider:
    - Current gradient (what would improve outcome)
    - Accumulated gradient history (what direction is working)
    - Strategic constraints (what to avoid)
-   - Semantic alignment (task verb must match action verb)
+   - Task requirements (what the task is asking for)
 
-   ⚠️ SEMANTIC ALIGNMENT PRINCIPLE:
-   Task description contains action verbs. Your recommended action should use the SAME verb.
-   Different verbs produce different environmental effects - match task verb to action verb.
+   ⚠️ GRADIENT HISTORY OVERRIDES VERB MATCHING!
+   If your gradient history shows an action is FAILING or REPEATING:
+   - DO NOT recommend that action again
+   - Try a DIFFERENT action type to break the cycle
+
+   ⚠️ TASK-EFFECT ALIGNMENT:
+   Before recommending an action, verify its expected EFFECT matches the TASK requirement.
+   - If the task requires achieving state X, recommend an action that produces state X
+   - Actions with similar-looking syntax may produce completely different effects
+   - If previous attempts didn't produce the required effect, the location or action type may be wrong
+
+   ⚠️ ═══════════════════════════════════════════════════════════════════════════════
+   ⚠️ CRITICAL: CROSS-CHECK WITH YOUR OWN ANALYSIS ABOVE!
+   ⚠️ ═══════════════════════════════════════════════════════════════════════════════
+
+   BEFORE recommending ANY action, verify it does NOT involve:
+   - ANY location/action from your PATTERN LOW list (step 2 above)
+   - ANY action from your FAILED_ACTIONS list (step 3 above)
+   - ANY location from SEARCHED_LOCATIONS (step 4) that did NOT have TARGET_NEEDED
+
+   If your initial recommendation involves something from PATTERN LOW, FAILED_ACTIONS,
+   or a SEARCHED location without the target:
+   → REJECT that recommendation immediately
+   → Choose a COMPLETELY DIFFERENT location or action type
+   → If you've tried multiple approaches at a location without success, that LOCATION is wrong
+   → Try an UNSEARCHED/UNEXPLORED location instead
+
+   This consistency check is MANDATORY - your recommendation MUST NOT contradict your own analysis.
+   ═══════════════════════════════════════════════════════════════════════════════
 
    From the VALID ACTIONS list, which SPECIFIC action optimizes progress?
 
-   MANDATORY: Before answering, complete this verb-matching check:
-   1. Extract the main action verb from task description
-   2. Search VALID ACTIONS for actions containing that verb
-   3. If found: pick best one; If not found: pick action exploring new location
-
-   Answer FORMAT (fill ALL fields):
-   TASK_VERB: [verb from task]
-   VERB_IN_VALID_ACTIONS: [Yes/No - do any valid actions use this verb?]
-   RECOMMENDED_ACTION: [exact text from VALID ACTIONS]
-   JUSTIFICATION: [why this action]
+   Answer FORMAT (CRITICAL: RECOMMENDED_ACTION line must contain ONLY the action, nothing else):
+   RECOMMENDED_ACTION: [paste exact action from VALID ACTIONS - no extra words]
+   JUSTIFICATION: [explain why + confirm NOT in PATTERN LOW, FAILED_ACTIONS, or searched-empty locations]
 
 6. PROGRESS EVALUATION (TextGrad-Style Pure Textual Feedback):
    Evaluate the progress this action made toward FULL TASK: "{task}"
@@ -6157,16 +6858,24 @@ TEXTGRAD GRADIENT COMPUTATION (Answer each precisely):
       CRITICAL: Evaluate relative to FULL TASK, not just current subtask.
       Completing a subtask is PARTIAL progress toward full task, not completion.
 
+      ⚠️ EFFECT VERIFICATION: If the task requires achieving a specific state change:
+      - Does the AFTER observation confirm that EXACT effect was achieved?
+      - If the observation describes a DIFFERENT effect, that is NOT progress toward the task!
+      - Actions with similar names may have completely different effects - verify by outcome, not name.
+
    C. NEXT_STEPS:
       What should the agent do next to complete the full task?
 
    D. PROGRESS_STATUS:
       Classify overall progress toward FULL TASK completion:
       - NO_PROGRESS: State change irrelevant to full task requirements
-      - EXPLORING: Gathering information, no requirements met yet
-      - PARTIAL_PROGRESS: Some requirements met, but full task incomplete
-      - MAJOR_PROGRESS: Most requirements met, close to completion
+      - EXPLORING: Searching but haven't found any objects mentioned in the task
+      - PARTIAL_PROGRESS: Found/acquired an object mentioned in task, OR positioned at key location
+      - MAJOR_PROGRESS: Have necessary objects AND at correct location for final action
       - TASK_COMPLETE: All requirements of full task satisfied
+
+      CRITICAL: If AFTER state shows an object mentioned in the TASK that wasn't visible before,
+      this is AT LEAST PARTIAL_PROGRESS - you discovered something needed for the task!
 
    Answer:
    A. STATE_CHANGE: [describe observable changes]
@@ -6286,11 +6995,36 @@ def parse_step_gradient_response(response: str, task: str, prev_observation: str
     task_addressed = answers.get(3, '').strip()
     addressed_list = [task_addressed] if task_addressed and task_addressed.lower() not in ['none', 'nothing', 'n/a'] else []
 
+    # FIX #32: Extract NEW_SEARCH_ENTRY from answer 4 (SEARCH MEMORY section)
+    search_memory_answer = answers.get(4, '').strip()
+    new_search_entry = ""
+    if search_memory_answer:
+        # Look for NEW_SEARCH_ENTRY pattern
+        search_match = re.search(r'NEW_SEARCH_ENTRY:\s*([^\n]+)', search_memory_answer, re.IGNORECASE)
+        if search_match:
+            entry = search_match.group(1).strip()
+            if entry.lower() not in ['none', 'n/a', '']:
+                new_search_entry = entry
+
+    # Backward compatibility: also check for task remaining in answer 4
     task_remaining = answers.get(4, task).strip()
     remaining_list = [task_remaining] if task_remaining else [task]
 
     learned_rule = answers.get(5, 'Continue exploring available actions').strip()
-    next_guidance = answers.get(4, 'Try unexplored actions').strip()  # Extract from answer 4 (CAUSAL CHAIN)
+
+    # CRITICAL FIX (Nov 22): Extract from answer #5 (NEXT ACTION OPTIMIZATION), NOT answer #4 (CONSTRAINT CHECK)
+    # Answer #5 contains: "RECOMMENDED_ACTION: ..., JUSTIFICATION: ..."
+    # FIX #9 (Nov 25): Removed MANDATORY verb-matching that was overriding gradient history learning
+    # This was causing loops where "look" was repeatedly recommended despite gradient history showing failure
+    answer_5 = answers.get(5, '').strip()
+
+    # Extract RECOMMENDED_ACTION from the structured format
+    recommended_action_match = re.search(r'RECOMMENDED_ACTION:\s*([^\n]+)', answer_5, re.IGNORECASE)
+    if recommended_action_match:
+        next_guidance = recommended_action_match.group(1).strip()
+    else:
+        # Fallback to full answer 5 if pattern not found
+        next_guidance = answer_5 if answer_5 else 'Try unexplored actions'
 
     # CRITICAL FIX: Extract "Recommended next action: X" from response
     recommended_action_match = re.search(r'Recommended next action:\s*([^\n]+)', response, re.IGNORECASE)
@@ -6320,6 +7054,7 @@ def parse_step_gradient_response(response: str, task: str, prev_observation: str
 
     # Build full gradient structure
     step_gradient = {
+        'action': action,  # FIX #7 (Nov 23): Include executed action for learning data logging
         'state_change': curr_observation if state_changed else 'NO CHANGE',
         'progress_assessment': f"Addressed: {', '.join(addressed_list)}" if addressed_list else "No progress",
         'progress_status': progress_status,  # TextGrad-style status (NO_PROGRESS, EXPLORING, etc.)
@@ -6336,7 +7071,8 @@ def parse_step_gradient_response(response: str, task: str, prev_observation: str
         'task_progress': {
             'addressed': addressed_list,
             'remaining': remaining_list
-        }
+        },
+        'new_search_entry': new_search_entry  # FIX #32: Search entry to accumulate
     }
 
     return step_gradient
@@ -6354,7 +7090,8 @@ def generate_textgrad_step_guidance(
     current_todo = None,
     inventory: List[str] = None,
     previous_reflexions: List[Dict] = None,
-    episodic_memory: List[str] = None
+    episodic_memory: List[str] = None,
+    step_insights: List[Dict] = None  # FIX #21: Raw observations (action + env feedback) instead of LLM interpretations
 ) -> Dict:
     """
     TextGrad-only prompt: Generate clean, actionable next action through gradient optimization.
@@ -6378,10 +7115,18 @@ def generate_textgrad_step_guidance(
         'guidance_source': 'textgrad'  # Mark source for action selector
     }
 
-    # Build TODO context
+    # Build TODO context with EXPLICIT observation comparison (FIX #22 - Universal)
     todo_context = ""
     if current_todo:
-        todo_context = f"\n📋 CURRENT SUBTASK: {current_todo.content}\n   (Focus on completing THIS subtask)\n"
+        todo_context = f"\n📋 CURRENT SUBTASK: {current_todo.content}\n"
+        # FIX #22: Add explicit TODO vs Observation comparison
+        todo_context += f"""
+   🔍 EXPLICIT TODO CHECK (Answer honestly):
+   - TODO requires: "{current_todo.content}"
+   - Last observation: "{curr_observation[:150]}"
+   - QUESTION: Does this observation indicate the TODO was achieved?
+   - If NO: You must try a DIFFERENT action/approach. Do NOT repeat what didn't work.
+"""
 
     # Build inventory context
     inventory_context = ""
@@ -6389,36 +7134,47 @@ def generate_textgrad_step_guidance(
         items_str = ', '.join(inventory)
         inventory_context = f"\n🎒 INVENTORY: Currently carrying {items_str}\n   ⚠️ If holding items, consider 'put' actions to place them.\n"
 
-    # Build gradient history (ALL tiered reflexions - already smartly compressed)
-    # CRITICAL: Use ALL history to avoid loops (forgetting past mistakes)
+    # FIX #21: Build gradient history from RAW OBSERVATIONS, not LLM interpretations
+    # ROOT CAUSE: LLM interpretations compound errors (e.g., "clean" interpreted as "cooled")
+    # SOLUTION: Show only raw action + raw environment feedback - let LLM interpret fresh each step
+    # FIX #25: Include BACKWARD GRADIENT (the learning lesson) - this was stored but never shown!
+    # ROOT CAUSE: backward_gradient contains "moving was suboptimal, should heat" but forward prompt never saw it
     gradient_context = ""
-    if previous_reflexions and len(previous_reflexions) > 0:
-        # Use ALL tiered reflexions (already compressed by manage_working_reflexions_tiered)
-        # This includes: cross-trial verbose + last 2 verbose + medium compressed + heavy compressed
+    if step_insights and len(step_insights) > 0:
+        # Use raw observations from step_insights_accumulator
         formatted = []
-        for r in previous_reflexions:
+        # FIX #36: Show ALL steps so LLM sees complete history of what was tried
+        # Previously limited to last 15, hiding repetition patterns from the LLM
+        for insight in step_insights:  # FIX #36: ALL steps, not just last 15
+            step_num = insight.get('step', '?')
+            action_taken = insight.get('action', 'unknown')
+            raw_observation = insight.get('observation', '')  # RAW environment feedback
+            backward_lesson = insight.get('backward_gradient', '')  # FIX #25: FULL lesson, no truncation!
+
+            # Format: Action → Feedback → Lesson (if available)
+            if backward_lesson:
+                formatted.append(f"  Step {step_num}: ACTION: \"{action_taken}\" → RESULT: \"{raw_observation}\"\n    📚 LESSON: {backward_lesson}")
+            else:
+                formatted.append(f"  Step {step_num}: ACTION: \"{action_taken}\" → RESULT: \"{raw_observation}\"")
+
+        gradient_text = "\n".join(formatted)
+        gradient_context = f"\n📊 COMPLETE ACTION HISTORY WITH LESSONS ({len(step_insights)} steps):\n{gradient_text}\n"  # FIX #36: Show count
+        gradient_context += "   ⚠️ CRITICAL: Review ALL steps above - if an action was tried multiple times without progress, DO NOT try it again!\n"
+        # FIX #36 DEBUG
+        lessons_count = sum(1 for ins in step_insights if ins.get('backward_gradient'))
+        print(f"[FIX #36] Forward prompt showing ALL {len(step_insights)} steps with {lessons_count} backward lessons")
+    elif previous_reflexions and len(previous_reflexions) > 0:
+        # Fallback to old format if step_insights not available (shouldn't happen)
+        formatted = []
+        for r in previous_reflexions:  # FIX #36: ALL reflexions
             step_num = r.get('step', '?')
             progress_status = r.get('progress_status', 'UNKNOWN')
             guidance = r.get('next_action_guidance', '')[:80]
-
-            # FIX #1: working_reflexions use 'reflection' field, step_gradients use 'hypothesis'
-            # Try 'reflection' first (working_reflexions), fallback to 'hypothesis' (step_gradients)
             hypothesis = r.get('reflection', r.get('hypothesis', ''))
-
-            # FIX #2: Don't truncate if already compressed; for verbose, allow full rich feedback
-            # Compressed reflexions already shortened (~100-200 chars max)
-            # Verbose reflexions need full A/B/C/D structure (~500-800 chars)
-            if r.get('is_compressed'):
-                # Already compressed by tiered system, show in full
-                hyp_display = hypothesis
-            else:
-                # Verbose: show up to 800 chars to capture full A/B/C/D structured feedback
-                hyp_display = hypothesis[:800] if len(hypothesis) > 800 else hypothesis
-
+            hyp_display = hypothesis[:200] if len(hypothesis) > 200 else hypothesis
             formatted.append(f"  Step {step_num}: [{progress_status}] {hyp_display} → {guidance}")
-
         gradient_text = "\n".join(formatted)
-        gradient_context = f"\n📊 GRADIENT HISTORY (ALL steps with smart compression):\n{gradient_text}\n"
+        gradient_context = f"\n📊 GRADIENT HISTORY (fallback):\n{gradient_text}\n"
 
     # Build episodic memory context (proven patterns)
     episodic_context = ""
@@ -6479,10 +7235,10 @@ TEXTGRAD OPTIMIZATION (Answer concisely):
    b) What does the task require?
       (Extract the goal from task description)
 
-   c) Semantic alignment check:
-      - If action verb matches task verb → Making progress
-      - If action verb differs from task verb → Possible mismatch
-      - If action produces task-irrelevant effects → Wrong approach
+   c) Progress check:
+      - Did the action move closer to completing the task requirements?
+      - Did the state change in a way that addresses what the task needs?
+      - Is this action advancing toward the goal or just repeating without progress?
 
    Answer: PROGRESS: [NO_PROGRESS | EXPLORING | PARTIAL_PROGRESS | MAJOR_PROGRESS | TASK_COMPLETE]
    REASON: [Explain what changed and how it relates to task goal]
@@ -6490,11 +7246,11 @@ TEXTGRAD OPTIMIZATION (Answer concisely):
 2. GRADIENT SIGNAL (Rich Textual Feedback):
    Provide EXPLICIT, DETAILED feedback about what was learned.
 
-   If there's a mismatch between action and task:
+   If the action didn't make progress:
    - STATE what the action did
    - STATE what the task needs
-   - EXPLAIN the semantic difference between action verb and task verb
-   - SUGGEST the correct action verb to use
+   - EXPLAIN why this action didn't advance the task
+   - SUGGEST a different approach to try
 
    If making progress:
    - STATE what's working
@@ -6521,22 +7277,17 @@ TEXTGRAD OPTIMIZATION (Answer concisely):
    - If TASK_COMPLETE or MAJOR_PROGRESS: Continue current strategy
    - If PARTIAL_PROGRESS: Adjust approach slightly or continue
    - If EXPLORING: Try different approaches that align with gradient feedback
-   - If NO_PROGRESS: Change strategy - if gradient identified verb mismatch, use correct verb
+   - If NO_PROGRESS: Change strategy completely - try a different action type
    - Respect TODO subtask if active
    - Use episodic patterns if available
    - Pick from VALID ACTIONS list
    - MUST NOT repeat actions listed in FAILED_ACTIONS above
 
-   ⚠️ SEMANTIC ALIGNMENT PRINCIPLE:
-   - Task description contains action verbs (e.g., verbs describing what to do with objects)
-   - Recommended action MUST use the SAME verb as the task description
-   - Different verbs typically produce different effects on environment state
-   - Match task verb to action verb for semantic alignment
-
-   MANDATORY PROCESS:
-   1. Identify main verb in task
-   2. Search valid actions for that verb
-   3. If found: use it; If not: explore new location
+   ⚠️ CRITICAL - GRADIENT HISTORY OVERRIDES VERB MATCHING:
+   - If FAILED_ACTIONS above shows an action failed or repeated without progress, DO NOT recommend it again
+   - Even if an action verb matches the task verb, if gradient history shows it's not making progress, try a DIFFERENT action
+   - The goal is TASK COMPLETION through continuous learning, not verb matching
+   - Trust your gradient history - it shows what's actually working
 
    Answer: NEXT_ACTION: [exact action string from valid actions, nothing else]
 
@@ -6603,7 +7354,8 @@ def generate_reflexion_causal_analysis(
     current_todo = None,  # Current TODO for tactical coordination
     inventory: List[str] = None,  # Items currently being carried
     previous_reflexions: List[Dict] = None,  # CRITICAL: Previous step learnings (step-level memory)
-    episodic_memory: List[str] = None  # CRITICAL: Cross-trial learnings (episodic memory)
+    episodic_memory: List[str] = None,  # CRITICAL: Cross-trial learnings (episodic memory)
+    step_insights: List[Dict] = None  # FIX #21: Raw observations instead of LLM interpretations
 ) -> Dict:
     """
     Reflexion-only prompt: Deep causal why-analysis for failures and low-progress situations.
@@ -6631,12 +7383,17 @@ def generate_reflexion_causal_analysis(
     # Loop detection removed - no repetition warning needed
     repetition_warning = ""
 
-    # Build TODO context for tactical coordination
+    # Build TODO context with EXPLICIT observation comparison (FIX #22 - Universal)
     todo_context = ""
     if current_todo:
         todo_context = f"""
 📋 CURRENT SUBTASK: {current_todo.content}
-   (This is what we're trying to accomplish RIGHT NOW)
+
+🔍 EXPLICIT TODO CHECK (Answer honestly):
+   - TODO requires: "{current_todo.content}"
+   - Last observation: "{curr_observation[:150]}"
+   - QUESTION: Does this observation indicate the TODO was achieved?
+   - If NO: Identify WHY it failed and what DIFFERENT approach is needed.
 """
 
     # Build inventory context (CRITICAL for avoiding loops)
@@ -6649,37 +7406,42 @@ def generate_reflexion_causal_analysis(
    Consider "put <item> on/in <location>" actions to complete placement subtasks.
 """
 
-    # Build previous reflexions context (CRITICAL for learning from past steps!)
-    # Use ALL reflexions with smart tiered compression - never forget early lessons!
+    # FIX #21: Build history from RAW OBSERVATIONS, not LLM interpretations
+    # FIX #25: Include BACKWARD GRADIENT lessons so agent learns from past mistakes
     reflexions_context = ""
-    if previous_reflexions and len(previous_reflexions) > 0:
-        # previous_reflexions is already tiered/compressed from the calling function
+    if step_insights and len(step_insights) > 0:
+        # Use raw observations from step_insights_accumulator
         formatted_reflexions = []
-        for r in previous_reflexions:
-            compression_type = r.get('is_compressed', None)
-            step_num = r.get('step', '?')
+        for insight in step_insights:  # FIX #36: ALL steps with raw data
+            step_num = insight.get('step', '?')
+            action_taken = insight.get('action', 'unknown')
+            raw_observation = insight.get('observation', '')  # RAW environment feedback
+            backward_lesson = insight.get('backward_gradient', '')  # FIX #25: Include lesson!
 
-            # FIX: Don't truncate - compressed already short, verbose needs full A/B/C/D structure
-            reflection_text = r.get('reflection', '')
-            if not compression_type:
-                # Verbose: allow up to 800 chars for full structured feedback
-                reflection_text = reflection_text[:800] if len(reflection_text) > 800 else reflection_text
-
-            if compression_type == 'heavy':
-                formatted_reflexions.append(f"  Steps {step_num} (early summary): {reflection_text}")
-            elif compression_type == 'medium':
-                formatted_reflexions.append(f"  Steps {step_num} (compressed): {reflection_text}")
+            # Format with lesson if available
+            if backward_lesson:
+                formatted_reflexions.append(f"  Step {step_num}: ACTION: \"{action_taken}\" → RESULT: \"{raw_observation}\"\n    📚 LESSON: {backward_lesson}")
             else:
-                formatted_reflexions.append(f"  Step {step_num} (recent): {reflection_text}")
+                formatted_reflexions.append(f"  Step {step_num}: ACTION: \"{action_taken}\" → RESULT: \"{raw_observation}\"")
 
         reflexion_text = "\n".join(formatted_reflexions)
-        total_count = len(previous_reflexions)
-        compressed_count = len([r for r in previous_reflexions if r.get('is_compressed')])
-
         reflexions_context = f"""
-📚 STEP-LEVEL LEARNINGS (ALL {total_count} steps: {compressed_count} compressed, {total_count - compressed_count} verbose):
+📚 RAW ACTION HISTORY WITH LESSONS:
 {reflexion_text}
-   ⚠️ CRITICAL: Early steps are compressed but still visible - learn from ENTIRE history!
+   ⚠️ CRITICAL: Read the LESSON for each step - it tells you what was WRONG and what to try INSTEAD!
+"""
+    elif previous_reflexions and len(previous_reflexions) > 0:
+        # Fallback to old format if step_insights not available
+        formatted_reflexions = []
+        for r in previous_reflexions:  # FIX #36: ALL reflexions
+            step_num = r.get('step', '?')
+            reflection_text = r.get('reflection', '')[:200]
+            formatted_reflexions.append(f"  Step {step_num}: {reflection_text}")
+
+        reflexion_text = "\n".join(formatted_reflexions)
+        reflexions_context = f"""
+📚 STEP-LEVEL LEARNINGS (fallback):
+{reflexion_text}
 """
 
     # Build episodic memory context (CRITICAL for cross-trial strategic learning!)
@@ -6701,6 +7463,10 @@ def generate_reflexion_causal_analysis(
 {episodic_text}
    ⚠️ CRITICAL: These are proven patterns across trials - use them to avoid known pitfalls!
 """
+
+    # FIX #21: Define exploration_context and textgrad_history_context (were undefined)
+    exploration_context = ""  # Not used in Reflexion - exploration is TextGrad's job
+    textgrad_history_context = ""  # Raw action history already in reflexions_context
 
     reflection_prompt = f"""🔬 REFLEXION: Causal Root-Cause Analysis
 
@@ -7062,11 +7828,13 @@ def run_trial(
         env_type: str = "alfworld",
         batch_size: int = 8,
         ablation_mode: str = 'combined',
+        pure_ablation: bool = False,
+        no_todo: bool = False,
     ) -> List[Dict[str, Any]]:
     """Run trial with discovery and gradient updates - NO PATTERNS"""
 
     # Set ablation flags based on mode
-    global USE_REFLEXION, USE_TEXTGRAD
+    global USE_REFLEXION, USE_TEXTGRAD, USE_TODO, PURE_ABLATION
     if ablation_mode == 'textgrad_only':
         USE_REFLEXION = False
         USE_TEXTGRAD = True
@@ -7077,13 +7845,24 @@ def run_trial(
         USE_REFLEXION = True
         USE_TEXTGRAD = True
 
+    # Pure ablation mode - for ICML paper
+    # Disables TODO and uses fresh prompts (not learned from previous runs)
+    PURE_ABLATION = pure_ablation
+    if pure_ablation or no_todo:
+        USE_TODO = False
+        print(f"\n[PURE ABLATION] TODO Manager DISABLED")
+    else:
+        USE_TODO = True
+
     print(f"\n[RUN_TRIAL START]")
     print(f"  trial_log_path = {trial_log_path}")
     print(f"  trial_idx = {trial_idx}")
     print(f"  num_envs = {len(env_configs)}")
     print(f"\n[ABLATION MODE] {ablation_mode}")
     print(f"  Reflexion (Memory): {USE_REFLEXION}")
-    print(f"  TextGrad (Prompt Optimization): {USE_TEXTGRAD}\n")
+    print(f"  TextGrad (Prompt Optimization): {USE_TEXTGRAD}")
+    print(f"  TODO Manager: {USE_TODO}")
+    print(f"  Pure Ablation: {PURE_ABLATION}\n")
     print(f"  env_type = {env_type}")
     print("[/RUN_TRIAL START]\n")
     
