@@ -40,6 +40,9 @@ class SamplingParams:
 # -------------------- Config --------------------
 _default_model = os.getenv("VLLM_MODEL", "qwen3-8b")
 _fast_model_name = os.getenv("VLLM_FAST_MODEL", "qwen3-8b")
+# Optional per-request reasoning effort (e.g. "medium" for Qwen3.8, whose default is "xhigh").
+# Observed on vLLM 0.29: a server-side --default-chat-template-kwargs value did not take effect.
+_REASONING_EFFORT = os.getenv("VLLM_REASONING_EFFORT")
 # Note: Llama 3.1 70B has no hidden reasoning tokens — works with any max_tokens
 
 # Rate limit tuning — model-specific based on testing
@@ -56,6 +59,17 @@ def _get_rate_config(model_name: str):
 
 _MAX_PARALLEL_MAIN, _STAGGER_DELAY = _get_rate_config(_default_model)
 _MAX_PARALLEL_FAST, _ = _get_rate_config(_fast_model_name)
+
+
+def _sampling_kwargs(model_name: str, temperature: float, max_tokens: int) -> dict:
+    """Qwen thinking models: the reasoning trace counts against max_tokens, so leave the
+    output budget to the server (remaining context). Recommended sampling differs per Qwen
+    generation and low/greedy temperatures cause endless repetition, so defer to the model's
+    generation_config.json (served with vLLM's default `--generation-config auto`)."""
+    kwargs = {} if "qwen" in model_name.lower() else {"temperature": temperature, "max_tokens": max_tokens}
+    if _REASONING_EFFORT:
+        kwargs["reasoning_effort"] = _REASONING_EFFORT
+    return kwargs
 
 
 # -------------------- Main Model Wrapper --------------------
@@ -104,8 +118,7 @@ class vLLMModelWrapper:
                 resp = client.chat.completions.create(
                     model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=max_output_tokens,
-                    temperature=0.2,
+                    **_sampling_kwargs(self.model_name, 0.2, max_output_tokens),
                 )
                 result = resp.choices[0].message.content if resp.choices else ""
 
@@ -241,8 +254,11 @@ class FastModelWrapper:
                     resp = client.chat.completions.create(
                         model=self.model_name,
                         messages=[{"role": "user", "content": prompt}],
-                        temperature=getattr(sampling_params, 'temperature', 0.0) if sampling_params else 0.0,
-                        max_tokens=safe_tokens,
+                        **_sampling_kwargs(
+                            self.model_name,
+                            getattr(sampling_params, 'temperature', 0.0) if sampling_params else 0.0,
+                            safe_tokens,
+                        ),
                     )
                     result = resp.choices[0].message.content
                     if not result or len(result.strip()) == 0:

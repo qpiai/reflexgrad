@@ -18,7 +18,7 @@ np.random.seed(_seed)
 
 # Configure ALFWorld to use official benchmark (134 evaluation tasks)
 # This ensures publication-level research with standardized evaluation
-os.environ['ALFWORLD_DATA'] = os.path.expanduser('~/.cache/alfworld')
+os.environ.setdefault('ALFWORLD_DATA', os.path.expanduser('~/.cache/alfworld'))
 
 # Parse args early to determine model provider
 parser_early = argparse.ArgumentParser(add_help=False)
@@ -97,7 +97,7 @@ def get_args():
                         help="IP address of the OSWorld VM")
     parser.add_argument("--osworld_vm_port", type=int, default=5000,
                         help="HTTP API port for the OSWorld VM (default: 5000)")
-    parser.add_argument("--max_steps", type=int, default=50,
+    parser.add_argument("--max_steps", type=int, default=None,
                         help="Maximum steps per episode (default: 50 for OSWorld, 55 for ALFWorld)")
     parser.add_argument("--osworld_headless", action='store_true',
                         help="Run OSWorld in headless mode (no VNC display)")
@@ -429,8 +429,12 @@ def check_early_stopping(accuracies: List[float], perfect_threshold: float,
     return False, ""
 
 def main(args) -> None:
+    if args.max_steps is not None:
+        os.environ["REFLEXGRAD_MAX_STEPS"] = str(args.max_steps)
+
     # OSWorld: set env vars from CLI args so get_environment() can pick them up
     if args.env_type == "osworld":
+        args.max_steps = args.max_steps or 50
         os.environ["OSWORLD_VM_IP"] = args.osworld_vm_ip
         os.environ["OSWORLD_VM_PORT"] = str(args.osworld_vm_port)
         os.environ["OSWORLD_MAX_STEPS"] = str(args.max_steps)

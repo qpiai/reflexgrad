@@ -4519,7 +4519,7 @@ def adaptive_env_interaction_batch(
 
     # Dynamic limit based on action space complexity
     # INCREASED: 21 → 28 to give agent more room for exploration and self-correction
-    max_steps = 55
+    max_steps = int(os.getenv("REFLEXGRAD_MAX_STEPS", "55"))
 
     # DASHBOARD: Initialize live state for first environment
     if env_states:
@@ -14795,7 +14795,9 @@ def run_trial(
             to_print=True,
             initial_obs_list=batch_initial_obs,
             trial_log_path=trial_log_path,
-            env_configs=env_configs,
+            # The batch function indexes env_configs by batch-local env id, so pass this batch's
+            # configs (same dict objects, so updates land in the full list).
+            env_configs=[env_configs[i] for i in batch_indices],
             trial_idx=trial_idx,
             use_memory=use_memory
         )

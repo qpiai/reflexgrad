@@ -1,5 +1,5 @@
 # Core dependencies
-alfworld==0.3.3
+alfworld==0.4.2
 openai>=1.12.0
 pyyaml>=6.0
 numpy>=1.24.0
